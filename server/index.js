@@ -24,7 +24,7 @@ const REMINDER_INTERVAL_MIN = Number(process.env.REMINDER_INTERVAL_MIN || 60);
 
 // ===== PATHS =====
 const PUBLIC_DIR = path.join(__dirname, "public");
-const dbPath = process.env.DB_PATH || path.join(__dirname, "storage", "data.db");
+const dbPath = process.env.DB_PATH || "/data/data.db";
 
 // storage papka avtomatik yaratiladi
 const storageDir = path.dirname(dbPath);
