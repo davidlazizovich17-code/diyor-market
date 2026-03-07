@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Diyor Market — Settings</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="logo">DM</div><div><h1>Diyor Market</h1><div class="sub">Settings</div></div></div>
+      <nav class="nav">
+        <a href="/index.html">📊 Dashboard</a>
+        <a href="/customers.html">👥 Mijozlar</a>
+        <a href="/debts.html">🧾 Qarzlar</a>
+        <a href="/products.html">📦 Mahsulotlar</a>
+        <a href="/today-debts.html">🗓️ Bugungi qarzlar</a>
+        <a href="/today-payments.html">✅ Bugungi to‘lovlar</a>
+        <a href="/settings.html">⚙️ Sozlamalar</a>
+      </nav>
+      <div class="pill"><span class="dot" id="dot"></span><span id="healthText">...</span></div>
+      <button class="btn danger" style="width:100%; margin-top:12px" onclick="doLogout()">🚪 Logout</button>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div style="font-weight:800">⚙️ Sozlamalar</div>
+      </div>
+
+      <div class="grid">
+        <div class="card" style="grid-column: span 6;">
+          <div style="font-weight:800">Server holati</div>
+          <div class="msg" id="s"></div>
+          <button class="btn" onclick="load()">🔄 Tekshirish</button>
+        </div>
+
+        <div class="card" style="grid-column: span 6;">
+          <div style="font-weight:800">Eslatma</div>
+          <div class="msg">
+            Login ma’lumotlari <code>.env</code> ichida.<br/>
+            Telegram bot ham <code>BOT_TOKEN</code> va <code>OWNER_CHAT_ID</code> bilan ishlaydi.
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+  <script>
+    async function load(){
+      const h = await fetch("/health", { credentials:"include" }).then(r=>r.json());
+      q("#s").textContent = JSON.stringify(h, null, 2);
+    }
+    load();
+  </script>
+</body>
+</html>

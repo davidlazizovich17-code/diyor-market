@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Diyor Market — Products</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="logo">DM</div><div><h1>Diyor Market</h1><div class="sub">Products</div></div></div>
+      <nav class="nav">
+        <a href="/index.html">📊 Dashboard</a>
+        <a href="/customers.html">👥 Mijozlar</a>
+        <a href="/debts.html">🧾 Qarzlar</a>
+        <a href="/products.html">📦 Mahsulotlar</a>
+        <a href="/today-debts.html">🗓️ Bugungi qarzlar</a>
+        <a href="/today-payments.html">✅ Bugungi to‘lovlar</a>
+        <a href="/settings.html">⚙️ Sozlamalar</a>
+      </nav>
+      <div class="pill"><span class="dot" id="dot"></span><span id="healthText">...</span></div>
+      <button class="btn danger" style="width:100%; margin-top:12px" onclick="doLogout()">🚪 Logout</button>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div style="font-weight:800">Mahsulotlar</div>
+        <div class="search">🔎 <input id="q" placeholder="Mahsulot nomi..." /></div>
+      </div>
+
+      <div class="grid">
+        <div class="card" style="grid-column: span 7;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-weight:800">Ro‘yxat</div>
+            <button class="btn" onclick="load()">🔄 Refresh</button>
+          </div>
+          <div class="tableWrap" style="margin-top:10px;">
+            <table>
+              <thead>
+                <tr><th>ID</th><th>Nomi</th><th>Narx</th><th>Stock</th><th>Unit</th><th>Action</th></tr>
+              </thead>
+              <tbody id="body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card" style="grid-column: span 5;">
+          <div style="font-weight:800">Mahsulot qo‘shish</div>
+          <div class="form" style="margin-top:10px;">
+            <div class="input"><label>Nomi</label><input id="name" placeholder="Masalan: Cola" /></div>
+            <div class="row">
+              <div class="input"><label>Narx</label><input id="price" type="number" placeholder="12000" /></div>
+              <div class="input"><label>Stock</label><input id="stock" type="number" placeholder="50" /></div>
+            </div>
+            <div class="input">
+              <label>Unit type</label>
+              <select id="unit">
+                <option value="piece">piece (dona)</option>
+                <option value="kilogram">kilogram (kg)</option>
+              </select>
+            </div>
+            <button class="btn primary" onclick="add()">➕ Saqlash</button>
+            <div class="msg" id="msg"></div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+  <script>
+    async function load(){
+      const qv = q("#q").value.trim();
+      const d = await api("/api/products" + (qv ? `?q=${encodeURIComponent(qv)}` : ""));
+      const b = q("#body");
+      b.innerHTML = (d.rows||[]).map(r=>`
+        <tr>
+          <td>${r.id}</td>
+          <td><b>${r.name}</b></td>
+          <td>${money(r.price)}</td>
+          <td>${r.stock}</td>
+          <td>${r.unit_type}</td>
+          <td>
+            <button class="btn danger" onclick="del(${r.id})">🗑️</button>
+          </td>
+        </tr>
+      `).join("") || `<tr><td colspan="6" class="msg">Mahsulot yo‘q.</td></tr>`;
+    }
+
+    async function add(){
+      q("#msg").textContent="";
+      try{
+        const name = q("#name").value.trim();
+        const price = Number(q("#price").value || 0);
+        const stock = Number(q("#stock").value || 0);
+        const unit_type = q("#unit").value;
+        await api("/api/products",{method:"POST", body:JSON.stringify({name, price, stock, unit_type})});
+        q("#msg").textContent="✅ Saqlandi";
+        q("#msg").className="msg ok";
+        q("#name").value=""; q("#price").value=""; q("#stock").value="";
+        load();
+      }catch(e){
+        q("#msg").textContent="❌ " + e.message;
+        q("#msg").className="msg err";
+      }
+    }
+
+    async function del(id){
+      if(!confirm("O‘chirishni tasdiqlaysizmi?")) return;
+      await api("/api/products/"+id,{method:"DELETE"});
+      load();
+    }
+
+    q("#q").addEventListener("keyup",(e)=>{ if(e.key==="Enter") load(); });
+    load();
+  </script>
+</body>
+</html>

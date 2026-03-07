@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Diyor Market — Debts</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">DM</div>
+        <div>
+          <h1>Diyor Market</h1>
+          <div class="sub">Debts</div>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <a href="/index.html">📊 Dashboard</a>
+        <a href="/customers.html">👥 Mijozlar</a>
+        <a href="/debts.html">🧾 Qarzlar</a>
+        <a href="/products.html">📦 Mahsulotlar</a>
+        <a href="/today-debts.html">🗓️ Bugungi qarzlar</a>
+        <a href="/today-payments.html">✅ Bugungi to‘lovlar</a>
+        <a href="/settings.html">⚙️ Sozlamalar</a>
+      </nav>
+
+      <div class="pill">
+        <span class="dot" id="dot"></span>
+        <span id="healthText">...</span>
+      </div>
+
+      <button class="btn danger" style="width:100%; margin-top:12px" onclick="doLogout()">🚪 Logout</button>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div style="font-weight:800">Qarzlar</div>
+        <div class="search">🔎 <input id="qsearch" placeholder="Mijoz nomi bo‘yicha qidirish..." /></div>
+      </div>
+
+      <div class="grid">
+        <div class="card col-5">
+          <div style="font-weight:800; font-size:22px;">🧾 Qarz yozish</div>
+          <div class="msg">Yangi mahsulotli qarz ham, eski daftar qarzini ko‘chirish ham mumkin.</div>
+
+          <div class="form" style="margin-top:14px;">
+            <div class="input">
+              <label>Mijoz</label>
+              <select id="customer"></select>
+            </div>
+
+            <div class="input">
+              <label>Mahsulot (ixtiyoriy)</label>
+              <select id="product">
+                <option value="">Mahsulot tanlanmasin / eski qarz</option>
+              </select>
+            </div>
+
+            <div class="row">
+              <div class="input">
+                <label>Narx</label>
+                <input id="pprice" type="number" placeholder="Masalan: 12000" />
+              </div>
+
+              <div class="input">
+                <label>Miqdor</label>
+                <input id="qty" type="number" value="1" min="1" />
+              </div>
+            </div>
+
+            <div class="row">
+              <div class="input">
+                <label>Umumiy summa</label>
+                <input id="total" type="number" placeholder="Masalan: 50000" />
+              </div>
+
+              <div class="input">
+                <label>Due date</label>
+                <input id="due" type="date" />
+              </div>
+            </div>
+
+            <div class="input">
+              <label>Izoh</label>
+              <textarea id="note" rows="3" placeholder="Masalan: eski daftar qarzi / non + cola / qo‘lda yozilgan qarz"></textarea>
+            </div>
+
+            <div class="row">
+              <button class="btn" type="button" onclick="setOldDebtMode()">📒 Eski daftar qarzi</button>
+              <button class="btn" type="button" onclick="setProductMode()">📦 Mahsulotli qarz</button>
+            </div>
+
+            <button class="btn primary" onclick="createDebt()">➕ Qarzni saqlash</button>
+            <div class="msg" id="msg"></div>
+          </div>
+        </div>
+
+        <div class="card col-7">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+            <div style="font-weight:800">Ro‘yxat</div>
+            <div style="display:flex; gap:10px; align-items:center;">
+              <label class="badge"><input type="checkbox" id="unpaid" /> Unpaid</label>
+              <button class="btn" onclick="loadDebts()">🔄 Refresh</button>
+            </div>
+          </div>
+
+          <div class="tableWrap" style="margin-top:10px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Mijoz</th>
+                  <th>Total</th>
+                  <th>Paid</th>
+                  <th>Remaining</th>
+                  <th>Due</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="body"></tbody>
+            </table>
+          </div>
+
+          <div class="card" style="margin-top:12px;">
+            <div style="font-weight:800">✅ To‘lov kiritish</div>
+
+            <div class="row" style="margin-top:10px;">
+              <div class="input">
+                <label>Debt ID</label>
+                <input id="payDebtId" placeholder="Masalan: 12" />
+              </div>
+              <div class="input">
+                <label>Amount</label>
+                <input id="payAmount" type="number" placeholder="50000" />
+              </div>
+            </div>
+
+            <div class="input">
+              <label>Izoh</label>
+              <input id="payNote" placeholder="Naqd / karta / qisman to‘lov" />
+            </div>
+
+            <button class="btn primary" onclick="addPay()">✅ To‘lovni saqlash</button>
+            <div class="msg" id="payMsg"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+  <script>
+    let customers = [];
+    let products = [];
+
+    function params(){
+      const u = new URL(location.href);
+      return Object.fromEntries(u.searchParams.entries());
+    }
+
+    async function loadSelectors(){
+      const c = await api("/api/customers");
+      customers = c.rows || [];
+      q("#customer").innerHTML = customers.map(x =>
+        `<option value="${x.id}">${x.name} (${x.phone || ""})</option>`
+      ).join("");
+
+      const p = await api("/api/products");
+      products = p.rows || [];
+
+      q("#product").innerHTML =
+        `<option value="">Mahsulot tanlanmasin / eski qarz</option>` +
+        products.map(x =>
+          `<option value="${x.id}">${x.name} • ${money(x.price)} • stock:${x.stock} • ${x.unit_type}</option>`
+        ).join("");
+
+      const pr = params();
+      if (pr.customer_id) q("#customer").value = pr.customer_id;
+
+      onPickProduct();
+    }
+
+    function onPickProduct(){
+      const pid = Number(q("#product").value);
+
+      if (!pid) {
+        q("#pprice").readOnly = false;
+        return;
+      }
+
+      const prod = products.find(x => x.id === pid);
+      if (!prod) return;
+
+      q("#pprice").value = Number(prod.price || 0);
+      q("#pprice").readOnly = false;
+      calcTotal();
+    }
+
+    function calcTotal(){
+      const pid = Number(q("#product").value);
+      const qty = Number(q("#qty").value || 0);
+      const manualPrice = Number(q("#pprice").value || 0);
+
+      if (pid) {
+        const prod = products.find(x => x.id === pid);
+        const price = manualPrice || Number(prod?.price || 0);
+        q("#total").value = qty > 0 ? (price * qty) : "";
+        return;
+      }
+
+      if (!q("#total").dataset.manualTouched) {
+        q("#total").value = qty > 0 && manualPrice > 0 ? (manualPrice * qty) : "";
+      }
+    }
+
+    function setOldDebtMode(){
+      q("#product").value = "";
+      q("#pprice").value = "";
+      q("#qty").value = 1;
+      q("#total").value = "";
+      q("#note").value = "Eski daftar qarzi";
+      q("#pprice").focus();
+      onPickProduct();
+    }
+
+    function setProductMode(){
+      if (products.length > 0) {
+        q("#product").value = products[0].id;
+        q("#note").value = "";
+        onPickProduct();
+      }
+    }
+
+    async function createDebt(){
+      q("#msg").textContent = "";
+
+      try {
+        const customer_id = Number(q("#customer").value);
+        const product_id = Number(q("#product").value || 0);
+        const qty = Number(q("#qty").value || 1);
+        const price = Number(q("#pprice").value || 0);
+        const total = Number(q("#total").value || 0);
+        const due_date = q("#due").value || null;
+        const note = q("#note").value.trim();
+
+        if (!customer_id) throw new Error("Mijoz tanlanmagan");
+        if (total <= 0) throw new Error("Umumiy summa kiritilmagan");
+
+        let items = [];
+        let finalNote = note;
+
+        if (product_id) {
+          const prod = products.find(x => x.id === product_id);
+          if (!prod) throw new Error("Mahsulot topilmadi");
+
+          items = [{ product_id, qty }];
+
+          if (!finalNote) {
+            finalNote = `${prod.name} x ${qty}`;
+          }
+        } else {
+          if (!finalNote) {
+            finalNote = "Eski daftar qarzi";
+          }
+        }
+
+        const payload = {
+          customer_id,
+          total,
+          note: finalNote,
+          due_date,
+          items
+        };
+
+        const r = await api("/api/debts", {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+
+        q("#msg").textContent = r.merged
+          ? "✅ Qarz mavjud ochiq qarzga qo‘shildi"
+          : "✅ Yangi qarz saqlandi";
+        q("#msg").className = "msg ok";
+
+        q("#product").value = "";
+        q("#pprice").value = "";
+        q("#qty").value = 1;
+        q("#total").value = "";
+        q("#note").value = "";
+        q("#total").dataset.manualTouched = "";
+        q("#due").value = "";
+
+        await loadSelectors();
+        await loadDebts();
+      } catch (e) {
+        q("#msg").textContent = "❌ " + e.message;
+        q("#msg").className = "msg err";
+      }
+    }
+
+    async function loadDebts(){
+      const pr = params();
+      const unpaid = q("#unpaid").checked ? "1" : "0";
+      const qv = q("#qsearch").value.trim() || (pr.q || "");
+      const customer_id = pr.customer_id ? Number(pr.customer_id) : null;
+
+      const query = new URLSearchParams();
+      if (customer_id) query.set("customer_id", customer_id);
+      if (unpaid === "1") query.set("unpaid", "1");
+      if (qv) query.set("q", qv);
+
+      const d = await api("/api/debts?" + query.toString());
+      const b = q("#body");
+
+      b.innerHTML = (d.rows || []).map(r => `
+        <tr>
+          <td>#${r.id}</td>
+          <td><b>${r.customer_name}</b></td>
+          <td>${money(r.total)}</td>
+          <td>${money(r.paid)}</td>
+          <td><b>${money(r.remaining)}</b> ${r.overdue ? `<span class="badge overdue">overdue</span>` : ""}</td>
+          <td>${r.due_date || "-"}</td>
+          <td><button class="btn" onclick="fillPay(${r.id})">✅ To‘lov</button></td>
+        </tr>
+      `).join("") || `<tr><td colspan="7" class="msg">Qarzlar yo‘q.</td></tr>`;
+    }
+
+    function fillPay(id){
+      q("#payDebtId").value = id;
+      q("#payAmount").focus();
+    }
+
+    async function addPay(){
+      q("#payMsg").textContent = "";
+      try {
+        const debt_id = Number(q("#payDebtId").value);
+        const amount = Number(q("#payAmount").value || 0);
+        const note = q("#payNote").value.trim();
+
+        await api("/api/payments", {
+          method: "POST",
+          body: JSON.stringify({ debt_id, amount, note })
+        });
+
+        q("#payMsg").textContent = "✅ To‘lov saqlandi";
+        q("#payMsg").className = "msg ok";
+        q("#payAmount").value = "";
+        q("#payNote").value = "";
+        loadDebts();
+      } catch (e) {
+        q("#payMsg").textContent = "❌ " + e.message;
+        q("#payMsg").className = "msg err";
+      }
+    }
+
+    q("#product").addEventListener("change", () => {
+      q("#total").dataset.manualTouched = "";
+      onPickProduct();
+    });
+
+    q("#qty").addEventListener("input", () => {
+      if (!q("#total").dataset.manualTouched) calcTotal();
+    });
+
+    q("#pprice").addEventListener("input", () => {
+      if (!q("#total").dataset.manualTouched) calcTotal();
+    });
+
+    q("#total").addEventListener("input", () => {
+      q("#total").dataset.manualTouched = "1";
+    });
+
+    q("#unpaid").addEventListener("change", loadDebts);
+    q("#qsearch").addEventListener("keyup", (e) => {
+      if (e.key === "Enter") loadDebts();
+    });
+
+    loadSelectors();
+    loadDebts();
+  </script>
+</body>
+</html>

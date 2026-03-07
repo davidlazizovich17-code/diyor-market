@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Diyor Market — Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">DM</div>
+        <div>
+          <h1>Diyor Market</h1>
+          <div class="sub">Online Qarz Daftar</div>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <a href="/index.html">📊 Dashboard <span class="badge">main</span></a>
+        <a href="/customers.html">👥 Mijozlar</a>
+        <a href="/debts.html">🧾 Qarzlar</a>
+        <a href="/products.html">📦 Mahsulotlar</a>
+        <a href="/today-debts.html">🗓️ Bugungi qarzlar</a>
+        <a href="/today-payments.html">✅ Bugungi to‘lovlar</a>
+        <a href="/settings.html">⚙️ Sozlamalar</a>
+      </nav>
+
+      <div class="pill">
+        <span class="dot" id="dot"></span>
+        <span id="healthText">...</span>
+      </div>
+
+      <button class="btn danger" style="width:100%; margin-top:12px" onclick="doLogout()">🚪 Logout</button>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div style="font-weight:800">Dashboard</div>
+        <div class="search">
+          🔎 <input id="globalSearch" placeholder="Mijoz bo‘yicha qidirish..." />
+        </div>
+      </div>
+
+      <div class="grid" id="kpis">
+        <div class="card kpi"><div class="label">Mijozlar</div><div class="value" id="k1">0</div></div>
+        <div class="card kpi"><div class="label">Umumiy qarz (qolgan)</div><div class="value" id="k2">0</div></div>
+        <div class="card kpi"><div class="label">Bugungi qarzlar</div><div class="value" id="k3">0</div></div>
+        <div class="card kpi"><div class="label">Bugungi to‘lovlar</div><div class="value" id="k4">0</div></div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+          <div style="font-weight:800">Top qarzdorlar</div>
+          <a class="btn" href="/debts.html">Qarzlar →</a>
+        </div>
+        <div class="tableWrap" style="margin-top:10px;">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th><th>Mijoz</th><th>Qolgan</th>
+              </tr>
+            </thead>
+            <tbody id="topBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+  <script>
+    async function load(){
+      const s = await api("/api/stats");
+      q("#k1").textContent = s.totalCustomers;
+      q("#k2").textContent = money(s.totalDebt);
+      q("#k3").textContent = money(s.todayDebts);
+      q("#k4").textContent = money(s.todayPays);
+
+      const tb = q("#topBody");
+      tb.innerHTML = (s.topDebtors || []).map((x,i)=>`
+        <tr>
+          <td>${i+1}</td>
+          <td>${x.name}</td>
+          <td><b>${money(x.remaining)}</b></td>
+        </tr>
+      `).join("") || `<tr><td colspan="3" class="msg">Top qarzdorlar yo‘q.</td></tr>`;
+    }
+
+    q("#globalSearch").addEventListener("keyup",(e)=>{
+      if(e.key==="Enter"){
+        const v = e.target.value.trim();
+        location.href = "/debts.html?q=" + encodeURIComponent(v);
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

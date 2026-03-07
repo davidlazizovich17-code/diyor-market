@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Diyor Market — Today Debts</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="logo">DM</div><div><h1>Diyor Market</h1><div class="sub">Today Debts</div></div></div>
+      <nav class="nav">
+        <a href="/index.html">📊 Dashboard</a>
+        <a href="/customers.html">👥 Mijozlar</a>
+        <a href="/debts.html">🧾 Qarzlar</a>
+        <a href="/products.html">📦 Mahsulotlar</a>
+        <a href="/today-debts.html">🗓️ Bugungi qarzlar</a>
+        <a href="/today-payments.html">✅ Bugungi to‘lovlar</a>
+        <a href="/settings.html">⚙️ Sozlamalar</a>
+      </nav>
+      <div class="pill"><span class="dot" id="dot"></span><span id="healthText">...</span></div>
+      <button class="btn danger" style="width:100%; margin-top:12px" onclick="doLogout()">🚪 Logout</button>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div style="font-weight:800">🗓️ Bugungi qarzlar</div>
+        <button class="btn" onclick="load()">🔄 Refresh</button>
+      </div>
+
+      <div class="card">
+        <div class="tableWrap">
+          <table>
+            <thead><tr><th>ID</th><th>Mijoz</th><th>Total</th><th>Remaining</th><th>Izoh</th></tr></thead>
+            <tbody id="body"></tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+  <script>
+    async function load(){
+      const d = await api("/api/debts?today=1");
+      q("#body").innerHTML = (d.rows||[]).map(r=>`
+        <tr>
+          <td>#${r.id}</td>
+          <td><b>${r.customer_name}</b></td>
+          <td>${money(r.total)}</td>
+          <td><b>${money(r.remaining)}</b></td>
+          <td>${r.note||""}</td>
+        </tr>
+      `).join("") || `<tr><td colspan="5" class="msg">Bugun qarz yo‘q.</td></tr>`;
+    }
+    load();
+  </script>
+</body>
+</html>
