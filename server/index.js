@@ -1062,61 +1062,25 @@ function startBot() {
     }
   });
 
-// ===== OVERDUE REMINDER =====
-async function sendOverdueDebtsReminder() {
-  try {
-    const rows = await all(`
-      SELECT
-        c.name,
-        c.phone,
-        d.id,
-        d.due_date,
-        (d.total - d.paid) as remaining
-      FROM debts d
-      JOIN customers c ON c.id = d.customer_id
-      WHERE (d.total - d.paid) > 0
-        AND d.due_date IS NOT NULL
-        AND date(d.due_date) < date('now','localtime')
-      ORDER BY date(d.due_date) ASC
-    `);
+  reminderInterval = setInterval(async () => {
+    try {
+      const overdue = await get(`
+        SELECT COUNT(*) as c
+        FROM debts
+        WHERE (total - paid) > 0
+          AND due_date IS NOT NULL
+          AND date(due_date) < date('now','localtime')
+      `);
 
-    if (!rows.length) return;
-
-    const list = rows
-      .map((r, i) => {
-        return (
-          `${i + 1}) <b>${r.name}</b>\n` +
-          `📞 ${r.phone || "-"}\n` +
-          `🧾 Qarz ID: #${r.id}\n` +
-          `💸 Qolgan: <b>${money(r.remaining)}</b>\n` +
-          `📅 Muddat: <b>${r.due_date}</b>`
-        );
-      })
-      .join("\n\n");
-
-    await notifyAdmin(`⏰ <b>Muddati o‘tgan qarzlar</b>\n\n${list}`);
-  } catch (e) {
-    console.error("Reminder error:", e.message);
-  }
+      const count = overdue?.c || 0;
+      if (count > 0) {
+        await notifyAdmin(`⏰ <b>Eslatma:</b> ${count} ta qarz muddati o‘tgan.`);
+      }
+    } catch (e) {
+      console.error("Reminder error:", e.message);
+    }
+  }, Math.max(10, REMINDER_INTERVAL_MIN) * 60 * 1000);
 }
-
-function startOverdueReminder() {
-  if (reminderInterval) {
-    clearInterval(reminderInterval);
-  }
-
-  // server ishga tushganda tekshiradi
-  setTimeout(() => {
-    sendOverdueDebtsReminder();
-  }, 15000);
-
-  // har 24 soatda ishlaydi
-  reminderInterval = setInterval(() => {
-    sendOverdueDebtsReminder();
-  }, 24 * 60 * 60 * 1000);
-}
-
-startOverdueReminder();
 
 // ===== HEALTH =====
 app.get("/health", async (req, res) => {
