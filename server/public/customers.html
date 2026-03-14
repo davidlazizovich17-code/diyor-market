@@ -154,217 +154,195 @@
 
   <script src="/app.js"></script>
   <script>
-    let rowsCache = [];
+  let rowsCache = [];
 
-    async function enrichCustomers(rows = []) {
-      const result = [];
+  async function load() {
+    const qv = q("#q").value.trim();
+    const d = await api("/api/customers" + (qv ? `?q=${encodeURIComponent(qv)}` : ""));
+    const b = q("#body");
 
-      for (const r of rows) {
-        try {
-          const one = await api("/api/customers/" + r.id);
-          result.push({
-            ...r,
-            remaining: Number(one.remaining || 0),
-            debts_count: Number(one.debts_count || 0)
-          });
-        } catch (_) {
-          result.push({
-            ...r,
-            remaining: 0,
-            debts_count: 0
-          });
-        }
+    rowsCache = d.rows || [];
+
+    b.innerHTML = rowsCache.map(r => `
+      <tr>
+        <td>${r.id}</td>
+        <td><b>${r.name}</b></td>
+        <td>${r.phone || ""}</td>
+        <td>${r.debts_count || 0}</td>
+        <td><b>${money(r.remaining || 0)}</b></td>
+        <td style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn" onclick="openDebts(${r.id})">🧾 Qarzlar</button>
+          <button class="btn" onclick="openEdit(${r.id})">✏️ Edit</button>
+          <button class="btn" onclick="openCustomerDetails(${r.id}, '${String(r.name).replace(/'/g, "\\'")}')">📄 Tafsilot</button>
+          <button class="btn danger" onclick="delCustomer(${r.id}, '${String(r.name).replace(/'/g, "\\'")}')">🗑️ O‘chirish</button>
+        </td>
+      </tr>
+    `).join("") || `<tr><td colspan="6" class="msg">Mijoz topilmadi.</td></tr>`;
+  }
+
+  function openDebts(id) {
+    location.href = "/debts.html?customer_id=" + id;
+  }
+
+  async function add() {
+    q("#msg").textContent = "";
+    try {
+      const name = q("#name").value.trim();
+      const phone = q("#phone").value.trim();
+
+      await api("/api/customers", {
+        method: "POST",
+        body: JSON.stringify({ name, phone })
+      });
+
+      q("#msg").textContent = "✅ Mijoz saqlandi";
+      q("#msg").className = "msg ok";
+      q("#name").value = "";
+      q("#phone").value = "";
+      load();
+    } catch (e) {
+      q("#msg").textContent = "❌ " + e.message;
+      q("#msg").className = "msg err";
+    }
+  }
+
+  function openEdit(id) {
+    const row = rowsCache.find(x => x.id === id);
+    if (!row) return;
+
+    q("#editId").value = row.id;
+    q("#editName").value = row.name || "";
+    q("#editPhone").value = row.phone || "";
+    q("#editMsg").textContent = "";
+    q("#editMsg").className = "msg";
+    q("#editModal").style.display = "block";
+  }
+
+  function closeEditModal() {
+    q("#editModal").style.display = "none";
+  }
+
+  async function saveEdit() {
+    q("#editMsg").textContent = "";
+    try {
+      const id = Number(q("#editId").value);
+      const name = q("#editName").value.trim();
+      const phone = q("#editPhone").value.trim();
+
+      await api("/api/customers/" + id, {
+        method: "PATCH",
+        body: JSON.stringify({ name, phone })
+      });
+
+      q("#editMsg").textContent = "✅ Yangilandi";
+      q("#editMsg").className = "msg ok";
+
+      await load();
+      setTimeout(() => closeEditModal(), 500);
+    } catch (e) {
+      q("#editMsg").textContent = "❌ " + e.message;
+      q("#editMsg").className = "msg err";
+    }
+  }
+
+  async function delCustomer(id, name) {
+    const yes = confirm(`${name} mijozini o‘chirmoqchimisiz?\n\nBu mijozga tegishli qarzlar ham o‘chadi.`);
+    if (!yes) return;
+
+    const username = prompt("Admin login kiriting:");
+    if (username === null) return;
+
+    const password = prompt("Admin parol kiriting:");
+    if (password === null) return;
+
+    try {
+      await api("/api/customers/" + id, {
+        method: "DELETE",
+        body: JSON.stringify({ username, password })
+      });
+
+      alert("✅ Mijoz o‘chirildi");
+      load();
+    } catch (e) {
+      alert("❌ " + e.message);
+    }
+  }
+
+  async function openCustomerDetails(customerId, customerName) {
+    q("#detailsModal").style.display = "block";
+    q("#detailsHead").textContent = "Yuklanmoqda...";
+    q("#detailsBody").innerHTML = "";
+
+    try {
+      const res = await api("/api/debts?customer_id=" + customerId);
+      const debts = res.rows || [];
+
+      q("#detailsHead").innerHTML =
+        `<b>${customerName}</b> bo‘yicha qarzlar ro‘yxati. Pastda har bir qarzning ichidagi yozuvlar chiqadi.`;
+
+      if (!debts.length) {
+        q("#detailsBody").innerHTML = `<tr><td colspan="7" class="msg">Qarz yo‘q.</td></tr>`;
+        return;
       }
 
-      return result;
-    }
+      const allRows = [];
 
-    async function load() {
-      const qv = q("#q").value.trim();
-      const d = await api("/api/customers" + (qv ? `?q=${encodeURIComponent(qv)}` : ""));
-      const b = q("#body");
+      for (const debt of debts) {
+        const detail = await api("/api/debts/" + debt.id + "/details");
+        const timeline = detail.timeline || [];
 
-      rowsCache = await enrichCustomers(d.rows || []);
-
-      b.innerHTML = rowsCache.map(r => `
-        <tr>
-          <td>${r.id}</td>
-          <td><b>${r.name}</b></td>
-          <td>${r.phone || ""}</td>
-          <td>${r.debts_count || 0}</td>
-          <td><b>${money(r.remaining || 0)}</b></td>
-          <td style="display:flex; gap:8px; flex-wrap:wrap;">
-            <button class="btn" onclick="openDebts(${r.id})">🧾 Qarzlar</button>
-            <button class="btn" onclick="openEdit(${r.id})">✏️ Edit</button>
-            <button class="btn" onclick="openCustomerDetails(${r.id}, '${String(r.name).replace(/'/g, "\\'")}')">📄 Tafsilot</button>
-            <button class="btn danger" onclick="delCustomer(${r.id}, '${String(r.name).replace(/'/g, "\\'")}')">🗑️ O‘chirish</button>
-          </td>
-        </tr>
-      `).join("") || `<tr><td colspan="6" class="msg">Mijoz topilmadi.</td></tr>`;
-    }
-
-    function openDebts(id) {
-      location.href = "/debts.html?customer_id=" + id;
-    }
-
-    async function add() {
-      q("#msg").textContent = "";
-      try {
-        const name = q("#name").value.trim();
-        const phone = q("#phone").value.trim();
-
-        await api("/api/customers", {
-          method: "POST",
-          body: JSON.stringify({ name, phone })
-        });
-
-        q("#msg").textContent = "✅ Mijoz saqlandi";
-        q("#msg").className = "msg ok";
-        q("#name").value = "";
-        q("#phone").value = "";
-        load();
-      } catch (e) {
-        q("#msg").textContent = "❌ " + e.message;
-        q("#msg").className = "msg err";
-      }
-    }
-
-    function openEdit(id) {
-      const row = rowsCache.find(x => x.id === id);
-      if (!row) return;
-
-      q("#editId").value = row.id;
-      q("#editName").value = row.name || "";
-      q("#editPhone").value = row.phone || "";
-      q("#editMsg").textContent = "";
-      q("#editMsg").className = "msg";
-      q("#editModal").style.display = "block";
-    }
-
-    function closeEditModal() {
-      q("#editModal").style.display = "none";
-    }
-
-    async function saveEdit() {
-      q("#editMsg").textContent = "";
-      try {
-        const id = Number(q("#editId").value);
-        const name = q("#editName").value.trim();
-        const phone = q("#editPhone").value.trim();
-
-        await api("/api/customers/" + id, {
-          method: "PATCH",
-          body: JSON.stringify({ name, phone })
-        });
-
-        q("#editMsg").textContent = "✅ Yangilandi";
-        q("#editMsg").className = "msg ok";
-
-        await load();
-        setTimeout(() => closeEditModal(), 500);
-      } catch (e) {
-        q("#editMsg").textContent = "❌ " + e.message;
-        q("#editMsg").className = "msg err";
-      }
-    }
-
-    async function delCustomer(id, name) {
-      const yes = confirm(`${name} mijozini o‘chirmoqchimisiz?\n\nBu mijozga tegishli qarzlar ham o‘chadi.`);
-      if (!yes) return;
-
-      const username = prompt("Admin login kiriting:");
-      if (username === null) return;
-
-      const password = prompt("Admin parol kiriting:");
-      if (password === null) return;
-
-      try {
-        await api("/api/customers/" + id, {
-          method: "DELETE",
-          body: JSON.stringify({ username, password })
-        });
-
-        alert("✅ Mijoz o‘chirildi");
-        load();
-      } catch (e) {
-        alert("❌ " + e.message);
-      }
-    }
-
-    async function openCustomerDetails(customerId, customerName) {
-      q("#detailsModal").style.display = "block";
-      q("#detailsHead").textContent = "Yuklanmoqda...";
-      q("#detailsBody").innerHTML = "";
-
-      try {
-        const res = await api("/api/debts?customer_id=" + customerId);
-        const debts = res.rows || [];
-
-        q("#detailsHead").innerHTML =
-          `<b>${customerName}</b> bo‘yicha qarzlar ro‘yxati. Pastda har bir qarzning ichidagi yozuvlar chiqadi.`;
-
-        if (!debts.length) {
-          q("#detailsBody").innerHTML = `<tr><td colspan="7" class="msg">Qarz yo‘q.</td></tr>`;
-          return;
-        }
-
-        const allRows = [];
-
-        for (const debt of debts) {
-          const detail = await api("/api/debts/" + debt.id + "/details");
-          const timeline = detail.timeline || [];
-
-          if (!timeline.length) {
-            allRows.push(`
-              <tr>
-                <td colspan="7" class="msg">#${debt.id} qarz uchun tafsilot yo‘q</td>
-              </tr>
-            `);
-            continue;
-          }
-
+        if (!timeline.length) {
           allRows.push(`
             <tr>
-              <td colspan="7" style="font-weight:800; background:rgba(255,255,255,.04);">
-                Qarz #${debt.id} | Jami: ${money(debt.total)} | To‘langan: ${money(debt.paid)} | Qolgan: ${money(debt.remaining)}
-              </td>
+              <td colspan="7" class="msg">#${debt.id} qarz uchun tafsilot yo‘q</td>
             </tr>
           `);
-
-          for (const ev of timeline) {
-            allRows.push(`
-              <tr>
-                <td>${formatDateTime(ev.created_at)}</td>
-                <td>${ev.event_type === "payment" ? "To‘lov" : "Qarz"}</td>
-                <td><b>${money(ev.amount)}</b></td>
-                <td>${ev.product_name || "-"}</td>
-                <td>${ev.qty ?? "-"}</td>
-                <td>${ev.note || "-"}</td>
-                <td>${ev.due_date || "-"}</td>
-              </tr>
-            `);
-          }
+          continue;
         }
 
-        q("#detailsBody").innerHTML = allRows.join("");
-      } catch (e) {
-        q("#detailsHead").textContent = "❌ " + e.message;
-        q("#detailsBody").innerHTML = "";
+        allRows.push(`
+          <tr>
+            <td colspan="7" style="font-weight:800; background:rgba(255,255,255,.04);">
+              Qarz #${debt.id} | Jami: ${money(debt.total)} | To‘langan: ${money(debt.paid)} | Qolgan: ${money(debt.remaining)}
+            </td>
+          </tr>
+        `);
+
+        for (const ev of timeline) {
+          allRows.push(`
+            <tr>
+              <td>${formatDateTime(ev.created_at)}</td>
+              <td>${ev.event_type === "payment" ? "To‘lov" : "Qarz"}</td>
+              <td><b>${money(ev.amount)}</b></td>
+              <td>${ev.product_name || "-"}</td>
+              <td>${ev.qty ?? "-"}</td>
+              <td>${ev.note || "-"}</td>
+              <td>${ev.due_date || "-"}</td>
+            </tr>
+          `);
+        }
       }
+
+      q("#detailsBody").innerHTML = allRows.join("");
+    } catch (e) {
+      q("#detailsHead").textContent = "❌ " + e.message;
+      q("#detailsBody").innerHTML = "";
     }
+  }
 
-    function closeDetailsModal() {
-      q("#detailsModal").style.display = "none";
-    }
+  function closeDetailsModal() {
+    q("#detailsModal").style.display = "none";
+  }
 
-    function formatDateTime(v) {
-      if (!v) return "-";
-      return String(v).replace("T", " ").slice(0, 19);
-    }
+  function formatDateTime(v) {
+    if (!v) return "-";
+    return String(v).replace("T", " ").slice(0, 19);
+  }
 
-    q("#q").addEventListener("input", load);
+  q("#q").addEventListener("input", load);
 
-    load();
-  </script>
+  load();
+</script>
+
 </body>
 </html>

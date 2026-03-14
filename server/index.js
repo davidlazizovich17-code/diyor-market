@@ -1657,15 +1657,39 @@ app.get("/api/customers", requireAuth, async (req, res) => {
   try {
     const q = safeText(req.query.q || "");
 
-    const rows = q
-      ? await all(`SELECT * FROM customers WHERE name LIKE ? OR phone LIKE ? ORDER BY id DESC`, [`%${q}%`, `%${q}%`])
-      : await all(`SELECT * FROM customers ORDER BY id DESC`);
+    const where = q ? `WHERE c.name LIKE ? OR c.phone LIKE ?` : ``;
+    const params = q ? [`%${q}%`, `%${q}%`] : [];
+
+    const rows = await all(
+      `
+      SELECT
+        c.id,
+        c.name,
+        c.phone,
+        c.created_at,
+        COALESCE(SUM(
+          CASE
+            WHEN (d.total - d.paid) > 0 THEN (d.total - d.paid)
+            ELSE 0
+          END
+        ), 0) AS remaining,
+        COUNT(DISTINCT d.id) AS debts_count
+      FROM customers c
+      LEFT JOIN debts d ON d.customer_id = c.id
+      ${where}
+      GROUP BY c.id
+      ORDER BY c.id DESC
+      `,
+      params
+    );
 
     res.json({ ok: true, rows });
   } catch (e) {
+    console.error("GET CUSTOMERS ERROR:", e);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
+
 
 app.get("/api/customers/:id", requireAuth, async (req, res) => {
   try {
