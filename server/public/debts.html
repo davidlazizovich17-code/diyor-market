@@ -99,9 +99,9 @@
         </div>
 
         <div class="card col-7">
-          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
             <div style="font-weight:800">Ro‘yxat</div>
-            <div style="display:flex; gap:10px; align-items:center;">
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
               <label class="badge"><input type="checkbox" id="unpaid" /> Unpaid</label>
               <button class="btn" onclick="loadDebts()">🔄 Refresh</button>
             </div>
@@ -151,10 +151,40 @@
     </main>
   </div>
 
+  <!-- DETAILS MODAL -->
+  <div id="detailsModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:1000; padding:20px; overflow:auto;">
+    <div class="card" style="max-width:980px; margin:30px auto;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+        <div style="font-weight:800; font-size:20px;">📄 Qarz tafsiloti</div>
+        <button class="btn danger" onclick="closeDetailsModal()">✖</button>
+      </div>
+
+      <div id="detailsHead" class="msg" style="margin-top:10px;"></div>
+
+      <div class="tableWrap" style="margin-top:12px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Vaqt</th>
+              <th>Turi</th>
+              <th>Summa</th>
+              <th>Mahsulot</th>
+              <th>Miqdor</th>
+              <th>Izoh</th>
+              <th>Due</th>
+            </tr>
+          </thead>
+          <tbody id="detailsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
   <script>
     let customers = [];
     let products = [];
+    let debtsCache = [];
 
     function params(){
       const u = new URL(location.href);
@@ -164,6 +194,7 @@
     async function loadSelectors(){
       const c = await api("/api/customers");
       customers = c.rows || [];
+
       q("#customer").innerHTML = customers.map(x =>
         `<option value="${x.id}">${x.name} (${x.phone || ""})</option>`
       ).join("");
@@ -313,9 +344,11 @@
       if (qv) query.set("q", qv);
 
       const d = await api("/api/debts?" + query.toString());
+      debtsCache = d.rows || [];
+
       const b = q("#body");
 
-      b.innerHTML = (d.rows || []).map(r => `
+      b.innerHTML = debtsCache.map(r => `
         <tr>
           <td>#${r.id}</td>
           <td><b>${r.customer_name}</b></td>
@@ -323,7 +356,11 @@
           <td>${money(r.paid)}</td>
           <td><b>${money(r.remaining)}</b> ${r.overdue ? `<span class="badge overdue">overdue</span>` : ""}</td>
           <td>${r.due_date || "-"}</td>
-          <td><button class="btn" onclick="fillPay(${r.id})">✅ To‘lov</button></td>
+          <td style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn" onclick="fillPay(${r.id})">✅ To‘lov</button>
+            <button class="btn" onclick="openDebtDetails(${r.id})">📄 Tafsilot</button>
+            <button class="btn danger" onclick="deleteDebt(${r.id})">🗑️ O‘chirish</button>
+          </td>
         </tr>
       `).join("") || `<tr><td colspan="7" class="msg">Qarzlar yo‘q.</td></tr>`;
     }
@@ -354,6 +391,66 @@
         q("#payMsg").textContent = "❌ " + e.message;
         q("#payMsg").className = "msg err";
       }
+    }
+
+    async function openDebtDetails(id){
+      q("#detailsModal").style.display = "block";
+      q("#detailsHead").textContent = "Yuklanmoqda...";
+      q("#detailsBody").innerHTML = "";
+
+      try {
+        const d = await api("/api/debts/" + id + "/details");
+        const debt = d.debt;
+        const timeline = d.timeline || [];
+
+        q("#detailsHead").innerHTML =
+          `#${debt.id} | <b>${debt.customer_name}</b> | Jami: <b>${money(debt.total)}</b> | To‘langan: <b>${money(debt.paid)}</b> | Qolgan: <b>${money(debt.remaining)}</b> | Due: ${debt.due_date || "-"}`;
+
+        q("#detailsBody").innerHTML = timeline.map(ev => `
+          <tr>
+            <td>${formatDateTime(ev.created_at)}</td>
+            <td>${ev.event_type === "payment" ? "To‘lov" : "Qarz"}</td>
+            <td><b>${money(ev.amount)}</b></td>
+            <td>${ev.product_name || "-"}</td>
+            <td>${ev.qty ?? "-"}</td>
+            <td>${ev.note || "-"}</td>
+            <td>${ev.due_date || "-"}</td>
+          </tr>
+        `).join("") || `<tr><td colspan="7" class="msg">Tafsilot yo‘q.</td></tr>`;
+      } catch (e) {
+        q("#detailsHead").textContent = "❌ " + e.message;
+        q("#detailsBody").innerHTML = "";
+      }
+    }
+
+    function closeDetailsModal(){
+      q("#detailsModal").style.display = "none";
+    }
+
+    async function deleteDebt(id){
+      const debt = debtsCache.find(x => x.id === id);
+      const text = debt
+        ? `Qarz #${id} ni o‘chirmoqchimisiz?\n\nMijoz: ${debt.customer_name}\nJami: ${money(debt.total)}\nQolgan: ${money(debt.remaining)}`
+        : `Qarz #${id} ni o‘chirmoqchimisiz?`;
+
+      if (!confirm(text)) return;
+
+      try {
+        await api("/api/debts/" + id, {
+          method: "DELETE"
+        });
+
+        alert("✅ Qarz o‘chirildi");
+        await loadSelectors();
+        await loadDebts();
+      } catch (e) {
+        alert("❌ " + e.message);
+      }
+    }
+
+    function formatDateTime(v){
+      if (!v) return "-";
+      return String(v).replace("T", " ").slice(0, 19);
     }
 
     q("#product").addEventListener("change", () => {

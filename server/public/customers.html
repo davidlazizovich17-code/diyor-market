@@ -48,7 +48,7 @@
           <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
             <div>
               <div style="font-weight:800">Ro‘yxat</div>
-              <div class="msg">Qidiruv orqali mijozlarni toping.</div>
+              <div class="msg">Qidiruv orqali mijozlarni toping, tahrir qiling yoki o‘chiring.</div>
             </div>
             <button class="btn" onclick="load()">🔄 Refresh</button>
           </div>
@@ -60,6 +60,8 @@
                   <th>ID</th>
                   <th>Ism</th>
                   <th>Telefon</th>
+                  <th>Qarzlar</th>
+                  <th>Qolgan</th>
                   <th>Action</th>
                 </tr>
               </thead>
@@ -90,32 +92,124 @@
     </main>
   </div>
 
+  <!-- EDIT MODAL -->
+  <div id="editModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:1000; padding:20px; overflow:auto;">
+    <div class="card" style="max-width:560px; margin:40px auto;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+        <div style="font-weight:800; font-size:20px;">✏️ Mijozni tahrirlash</div>
+        <button class="btn danger" onclick="closeEditModal()">✖</button>
+      </div>
+
+      <div class="form" style="margin-top:12px;">
+        <input type="hidden" id="editId" />
+
+        <div class="input">
+          <label>Ism</label>
+          <input id="editName" placeholder="Ism" />
+        </div>
+
+        <div class="input">
+          <label>Telefon</label>
+          <input id="editPhone" placeholder="+998..." />
+        </div>
+
+        <div class="row">
+          <button class="btn primary" onclick="saveEdit()">💾 Saqlash</button>
+          <button class="btn" onclick="closeEditModal()">Bekor qilish</button>
+        </div>
+
+        <div class="msg" id="editMsg"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DETAILS MODAL -->
+  <div id="detailsModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:1000; padding:20px; overflow:auto;">
+    <div class="card" style="max-width:900px; margin:30px auto;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+        <div style="font-weight:800; font-size:20px;">📄 Qarz tafsilotlari</div>
+        <button class="btn danger" onclick="closeDetailsModal()">✖</button>
+      </div>
+
+      <div id="detailsHead" class="msg" style="margin-top:10px;"></div>
+
+      <div class="tableWrap" style="margin-top:12px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Vaqt</th>
+              <th>Turi</th>
+              <th>Summa</th>
+              <th>Mahsulot</th>
+              <th>Miqdor</th>
+              <th>Izoh</th>
+              <th>Due</th>
+            </tr>
+          </thead>
+          <tbody id="detailsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
   <script>
-    async function load(){
+    let rowsCache = [];
+
+    async function enrichCustomers(rows = []) {
+      const result = [];
+
+      for (const r of rows) {
+        try {
+          const one = await api("/api/customers/" + r.id);
+          result.push({
+            ...r,
+            remaining: Number(one.remaining || 0),
+            debts_count: Number(one.debts_count || 0)
+          });
+        } catch (_) {
+          result.push({
+            ...r,
+            remaining: 0,
+            debts_count: 0
+          });
+        }
+      }
+
+      return result;
+    }
+
+    async function load() {
       const qv = q("#q").value.trim();
       const d = await api("/api/customers" + (qv ? `?q=${encodeURIComponent(qv)}` : ""));
       const b = q("#body");
 
-      b.innerHTML = (d.rows || []).map(r => `
+      rowsCache = await enrichCustomers(d.rows || []);
+
+      b.innerHTML = rowsCache.map(r => `
         <tr>
           <td>${r.id}</td>
           <td><b>${r.name}</b></td>
           <td>${r.phone || ""}</td>
-          <td>
+          <td>${r.debts_count || 0}</td>
+          <td><b>${money(r.remaining || 0)}</b></td>
+          <td style="display:flex; gap:8px; flex-wrap:wrap;">
             <button class="btn" onclick="openDebts(${r.id})">🧾 Qarzlar</button>
+            <button class="btn" onclick="openEdit(${r.id})">✏️ Edit</button>
+            <button class="btn" onclick="openCustomerDetails(${r.id}, '${String(r.name).replace(/'/g, "\\'")}')">📄 Tafsilot</button>
+            <button class="btn danger" onclick="delCustomer(${r.id}, '${String(r.name).replace(/'/g, "\\'")}')">🗑️ O‘chirish</button>
           </td>
         </tr>
-      `).join("") || `<tr><td colspan="4" class="msg">Mijoz topilmadi.</td></tr>`;
+      `).join("") || `<tr><td colspan="6" class="msg">Mijoz topilmadi.</td></tr>`;
     }
 
-    function openDebts(id){
+    function openDebts(id) {
       location.href = "/debts.html?customer_id=" + id;
     }
 
-    async function add(){
+    async function add() {
       q("#msg").textContent = "";
-      try{
+      try {
         const name = q("#name").value.trim();
         const phone = q("#phone").value.trim();
 
@@ -129,10 +223,143 @@
         q("#name").value = "";
         q("#phone").value = "";
         load();
-      }catch(e){
+      } catch (e) {
         q("#msg").textContent = "❌ " + e.message;
         q("#msg").className = "msg err";
       }
+    }
+
+    function openEdit(id) {
+      const row = rowsCache.find(x => x.id === id);
+      if (!row) return;
+
+      q("#editId").value = row.id;
+      q("#editName").value = row.name || "";
+      q("#editPhone").value = row.phone || "";
+      q("#editMsg").textContent = "";
+      q("#editMsg").className = "msg";
+      q("#editModal").style.display = "block";
+    }
+
+    function closeEditModal() {
+      q("#editModal").style.display = "none";
+    }
+
+    async function saveEdit() {
+      q("#editMsg").textContent = "";
+      try {
+        const id = Number(q("#editId").value);
+        const name = q("#editName").value.trim();
+        const phone = q("#editPhone").value.trim();
+
+        await api("/api/customers/" + id, {
+          method: "PATCH",
+          body: JSON.stringify({ name, phone })
+        });
+
+        q("#editMsg").textContent = "✅ Yangilandi";
+        q("#editMsg").className = "msg ok";
+
+        await load();
+        setTimeout(() => closeEditModal(), 500);
+      } catch (e) {
+        q("#editMsg").textContent = "❌ " + e.message;
+        q("#editMsg").className = "msg err";
+      }
+    }
+
+    async function delCustomer(id, name) {
+      const yes = confirm(`${name} mijozini o‘chirmoqchimisiz?\n\nBu mijozga tegishli qarzlar ham o‘chadi.`);
+      if (!yes) return;
+
+      const username = prompt("Admin login kiriting:");
+      if (username === null) return;
+
+      const password = prompt("Admin parol kiriting:");
+      if (password === null) return;
+
+      try {
+        await api("/api/customers/" + id, {
+          method: "DELETE",
+          body: JSON.stringify({ username, password })
+        });
+
+        alert("✅ Mijoz o‘chirildi");
+        load();
+      } catch (e) {
+        alert("❌ " + e.message);
+      }
+    }
+
+    async function openCustomerDetails(customerId, customerName) {
+      q("#detailsModal").style.display = "block";
+      q("#detailsHead").textContent = "Yuklanmoqda...";
+      q("#detailsBody").innerHTML = "";
+
+      try {
+        const res = await api("/api/debts?customer_id=" + customerId);
+        const debts = res.rows || [];
+
+        q("#detailsHead").innerHTML =
+          `<b>${customerName}</b> bo‘yicha qarzlar ro‘yxati. Pastda har bir qarzning ichidagi yozuvlar chiqadi.`;
+
+        if (!debts.length) {
+          q("#detailsBody").innerHTML = `<tr><td colspan="7" class="msg">Qarz yo‘q.</td></tr>`;
+          return;
+        }
+
+        const allRows = [];
+
+        for (const debt of debts) {
+          const detail = await api("/api/debts/" + debt.id + "/details");
+          const timeline = detail.timeline || [];
+
+          if (!timeline.length) {
+            allRows.push(`
+              <tr>
+                <td colspan="7" class="msg">#${debt.id} qarz uchun tafsilot yo‘q</td>
+              </tr>
+            `);
+            continue;
+          }
+
+          allRows.push(`
+            <tr>
+              <td colspan="7" style="font-weight:800; background:rgba(255,255,255,.04);">
+                Qarz #${debt.id} | Jami: ${money(debt.total)} | To‘langan: ${money(debt.paid)} | Qolgan: ${money(debt.remaining)}
+              </td>
+            </tr>
+          `);
+
+          for (const ev of timeline) {
+            allRows.push(`
+              <tr>
+                <td>${formatDateTime(ev.created_at)}</td>
+                <td>${ev.event_type === "payment" ? "To‘lov" : "Qarz"}</td>
+                <td><b>${money(ev.amount)}</b></td>
+                <td>${ev.product_name || "-"}</td>
+                <td>${ev.qty ?? "-"}</td>
+                <td>${ev.note || "-"}</td>
+                <td>${ev.due_date || "-"}</td>
+              </tr>
+            `);
+          }
+        }
+
+        q("#detailsBody").innerHTML = allRows.join("");
+      } catch (e) {
+        q("#detailsHead").textContent = "❌ " + e.message;
+        q("#detailsBody").innerHTML = "";
+      }
+    }
+
+    function closeDetailsModal() {
+      q("#detailsModal").style.display = "none";
+    }
+
+    function formatDateTime(v) {
+      if (!v) return "-";
+      return String(v).replace("T", " ").slice(0, 19);
     }
 
     q("#q").addEventListener("input", load);

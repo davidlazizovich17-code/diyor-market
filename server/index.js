@@ -1,4 +1,4 @@
-// server/index.js — DIYOR MARKET (FULL + TELEGRAM BOT MENU + CUSTOMER LINK)
+// server/index.js — DIYOR MARKET (FULL + EDIT/DELETE + DEBT DETAILS + BOT ADMIN TOOLS)
 
 require("dotenv").config();
 
@@ -14,12 +14,12 @@ const app = express();
 
 // ===== CONFIG =====
 const PORT = Number(process.env.PORT || 4000);
-const APP_USER = (process.env.APP_USER || "admin").trim();
-const APP_PASS = (process.env.APP_PASS || "12345").trim();
-const SESSION_SECRET = (process.env.SESSION_SECRET || "secret").trim();
+const APP_USER = String(process.env.APP_USER || "admin").trim();
+const APP_PASS = String(process.env.APP_PASS || "12345").trim();
+const SESSION_SECRET = String(process.env.SESSION_SECRET || "secret").trim();
 
-const BOT_TOKEN = (process.env.BOT_TOKEN || "").trim();
-const OWNER_CHAT_ID = (process.env.OWNER_CHAT_ID || "").trim();
+const BOT_TOKEN = String(process.env.BOT_TOKEN || "").trim();
+const OWNER_CHAT_ID = String(process.env.OWNER_CHAT_ID || "").trim();
 const REMINDER_INTERVAL_MIN = Number(process.env.REMINDER_INTERVAL_MIN || 60);
 
 // ===== PATHS =====
@@ -71,7 +71,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
+    db.run(sql, params, function runCallback(err) {
       if (err) return reject(err);
       resolve({ id: this.lastID, changes: this.changes });
     });
@@ -132,6 +132,19 @@ function money(n) {
   return Number(n || 0).toFixed(0);
 }
 
+function adminCredsOk(username, password) {
+  return String(username || "").trim() === APP_USER && String(password || "").trim() === APP_PASS;
+}
+
+function safeText(v) {
+  return String(v ?? "").trim();
+}
+
+function formatDateTime(v) {
+  if (!v) return "-";
+  return String(v).replace("T", " ").slice(0, 19);
+}
+
 // ===== DB INIT =====
 async function initDb() {
   await run(`
@@ -189,6 +202,25 @@ async function initDb() {
     )
   `);
 
+  // Qarz tafsilotlari uchun har bir yozilgan qarz/to‘lov eventlari
+  await run(`
+    CREATE TABLE IF NOT EXISTS debt_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      debt_id INTEGER NOT NULL,
+      customer_id INTEGER NOT NULL,
+      event_type TEXT NOT NULL DEFAULT 'debt_add', -- debt_add | payment
+      amount REAL NOT NULL DEFAULT 0,
+      note TEXT,
+      product_id INTEGER,
+      qty REAL,
+      due_date TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY(debt_id) REFERENCES debts(id),
+      FOREIGN KEY(customer_id) REFERENCES customers(id),
+      FOREIGN KEY(product_id) REFERENCES products(id)
+    )
+  `);
+
   try {
     await run(`ALTER TABLE debts ADD COLUMN due_date TEXT`);
   } catch (_) {}
@@ -201,6 +233,8 @@ async function initDb() {
   await run(`CREATE INDEX IF NOT EXISTS idx_payments_debt ON payments(debt_id)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_products_name ON products(name)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_links_customer_id ON customer_telegram_links(customer_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_debt_events_debt ON debt_events(debt_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_debt_events_customer ON debt_events(customer_id)`);
 }
 
 // ===== AUTH =====
@@ -240,7 +274,7 @@ app.get("/login", (req, res) => res.redirect("/login.html"));
 app.post("/login", (req, res) => {
   const { username, password } = req.body || {};
 
-  if ((username || "").trim() === APP_USER && (password || "").trim() === APP_PASS) {
+  if (adminCredsOk(username, password)) {
     req.session.user = "admin";
     return res.json({ ok: true });
   }
@@ -260,11 +294,206 @@ const userStates = new Map();
 function setUserState(chatId, state) {
   userStates.set(String(chatId), state);
 }
+
 function getUserState(chatId) {
   return userStates.get(String(chatId)) || null;
 }
+
 function clearUserState(chatId) {
   userStates.delete(String(chatId));
+}
+
+// ===== COMMON DATA HELPERS =====
+async function addDebtEvent({
+  debt_id,
+  customer_id,
+  event_type = "debt_add",
+  amount = 0,
+  note = null,
+  product_id = null,
+  qty = null,
+  due_date = null,
+}) {
+  await run(
+    `
+    INSERT INTO debt_events(
+      debt_id, customer_id, event_type, amount, note, product_id, qty, due_date
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      Number(debt_id),
+      Number(customer_id),
+      String(event_type),
+      Number(amount || 0),
+      note || null,
+      product_id ? Number(product_id) : null,
+      qty != null ? Number(qty) : null,
+      due_date || null,
+    ]
+  );
+}
+
+async function getDebtHeader(debtId) {
+  return await get(
+    `
+    SELECT
+      d.*,
+      c.name AS customer_name,
+      c.phone AS customer_phone,
+      (d.total - d.paid) AS remaining,
+      CASE
+        WHEN d.due_date IS NOT NULL
+         AND date(d.due_date) < date('now','localtime')
+         AND (d.total - d.paid) > 0
+        THEN 1 ELSE 0
+      END AS overdue
+    FROM debts d
+    JOIN customers c ON c.id = d.customer_id
+    WHERE d.id = ?
+    LIMIT 1
+    `,
+    [Number(debtId)]
+  );
+}
+
+async function getDebtTimeline(debtId) {
+  return await all(
+    `
+    SELECT
+      e.*,
+      p.name AS product_name
+    FROM debt_events e
+    LEFT JOIN products p ON p.id = e.product_id
+    WHERE e.debt_id = ?
+    ORDER BY datetime(e.created_at) ASC, e.id ASC
+    `,
+    [Number(debtId)]
+  );
+}
+
+async function getCustomerSummary(customerId) {
+  const customer = await get(`SELECT * FROM customers WHERE id = ?`, [Number(customerId)]);
+  if (!customer) return null;
+
+  const totalRemainingRow = await get(
+    `SELECT COALESCE(SUM(total - paid), 0) AS remaining FROM debts WHERE customer_id = ? AND (total - paid) > 0`,
+    [Number(customerId)]
+  );
+
+  const debtsCountRow = await get(`SELECT COUNT(*) AS c FROM debts WHERE customer_id = ?`, [Number(customerId)]);
+
+  return {
+    customer,
+    remaining: Number(totalRemainingRow?.remaining || 0),
+    debts_count: Number(debtsCountRow?.c || 0),
+  };
+}
+
+async function buildDebtDetailsText(debtId) {
+  const debt = await getDebtHeader(debtId);
+  if (!debt) return "Qarz topilmadi.";
+
+  const timeline = await getDebtTimeline(debtId);
+
+  const head =
+    `🧾 <b>Qarz tafsiloti #${debt.id}</b>\n` +
+    `👤 ${debt.customer_name}\n` +
+    `📞 ${debt.customer_phone || "-"}\n` +
+    `💸 Jami: <b>${money(debt.total)}</b>\n` +
+    `✅ To‘langan: <b>${money(debt.paid)}</b>\n` +
+    `💰 Qolgan: <b>${money(debt.remaining)}</b>\n` +
+    `📅 Due: ${debt.due_date || "-"}\n` +
+    `📝 Asosiy izoh: ${debt.note || "-"}\n\n`;
+
+  if (!timeline.length) {
+    return head + "Tafsilot eventlari yo‘q.";
+  }
+
+  const lines = timeline
+    .map((x, i) => {
+      const when = formatDateTime(x.created_at);
+      if (x.event_type === "payment") {
+        return `${i + 1}) ${when}\n   ✅ TO‘LOV: <b>${money(x.amount)}</b>\n   📝 ${x.note || "-"}`;
+      }
+
+      const itemName = x.product_name || (x.product_id ? `Mahsulot #${x.product_id}` : "Qo‘lda/Eski qarz");
+      const qtyText = x.qty != null ? `\n   🔢 Miqdor: ${x.qty}` : "";
+      const dueText = x.due_date ? `\n   📅 Due: ${x.due_date}` : "";
+      return (
+        `${i + 1}) ${when}\n` +
+        `   ➕ QARZ: <b>${money(x.amount)}</b>\n` +
+        `   📦 ${itemName}${qtyText}${dueText}\n` +
+        `   📝 ${x.note || "-"}`
+      );
+    })
+    .join("\n\n");
+
+  return head + lines;
+}
+
+async function buildCustomerManageText(customerId) {
+  const summary = await getCustomerSummary(customerId);
+  if (!summary) return "Mijoz topilmadi.";
+
+  return (
+    `👤 <b>Mijoz</b>\n` +
+    `ID: <b>${summary.customer.id}</b>\n` +
+    `Ism: <b>${summary.customer.name}</b>\n` +
+    `Telefon: <b>${summary.customer.phone || "-"}</b>\n` +
+    `Qarzlar soni: <b>${summary.debts_count}</b>\n` +
+    `Umumiy qolgan qarz: <b>${money(summary.remaining)}</b>`
+  );
+}
+
+async function deleteDebtDeep(debtId) {
+  const debt = await get(`SELECT * FROM debts WHERE id = ?`, [Number(debtId)]);
+  if (!debt) {
+    return { ok: false, error: "Qarz topilmadi" };
+  }
+
+  // Mahsulot stockni qaytarish
+  const restoreRows = await all(
+    `
+    SELECT product_id, COALESCE(SUM(qty),0) AS qty_sum
+    FROM debt_events
+    WHERE debt_id = ?
+      AND event_type = 'debt_add'
+      AND product_id IS NOT NULL
+      AND qty IS NOT NULL
+    GROUP BY product_id
+    `,
+    [Number(debtId)]
+  );
+
+  for (const row of restoreRows) {
+    if (row.product_id && Number(row.qty_sum || 0) > 0) {
+      await run(`UPDATE products SET stock = stock + ? WHERE id = ?`, [Number(row.qty_sum), Number(row.product_id)]);
+    }
+  }
+
+  await run(`DELETE FROM payments WHERE debt_id = ?`, [Number(debtId)]);
+  await run(`DELETE FROM debt_events WHERE debt_id = ?`, [Number(debtId)]);
+  await run(`DELETE FROM debts WHERE id = ?`, [Number(debtId)]);
+
+  return { ok: true, customer_id: debt.customer_id };
+}
+
+async function deleteCustomerDeep(customerId) {
+  const customer = await get(`SELECT * FROM customers WHERE id = ?`, [Number(customerId)]);
+  if (!customer) {
+    return { ok: false, error: "Mijoz topilmadi" };
+  }
+
+  const debts = await all(`SELECT id FROM debts WHERE customer_id = ? ORDER BY id ASC`, [Number(customerId)]);
+  for (const d of debts) {
+    const r = await deleteDebtDeep(d.id);
+    if (!r.ok) return r;
+  }
+
+  await run(`DELETE FROM customer_telegram_links WHERE customer_id = ?`, [Number(customerId)]);
+  await run(`DELETE FROM customers WHERE id = ?`, [Number(customerId)]);
+
+  return { ok: true, customer };
 }
 
 // ===== BOT HELPERS =====
@@ -288,6 +517,8 @@ function getAdminMenuKeyboard() {
       [{ text: "📦 Mahsulotlar" }, { text: "🧾 Bugungi qarzlar" }],
       [{ text: "✅ Bugungi to‘lovlar" }, { text: "🏆 Top qarzdorlar" }],
       [{ text: "➕ Qarz yozish" }, { text: "👤 Mijoz qo‘shish" }],
+      [{ text: "✏️ Mijoz tahrirlash" }, { text: "📄 Qarz tafsiloti" }],
+      [{ text: "🗑️ Qarz o‘chirish" }],
     ],
     resize_keyboard: true,
   };
@@ -297,6 +528,18 @@ function getCustomerMenuKeyboard() {
   return {
     keyboard: [[{ text: "💳 Mening qarzim" }], [{ text: "📱 Telefon raqamni yuborish", request_contact: true }]],
     resize_keyboard: true,
+  };
+}
+
+function getCustomerManageInline(customerId) {
+  return {
+    inline_keyboard: [
+      [{ text: "✏️ Ismni tahrirlash", callback_data: `customer_edit_name_${customerId}` }],
+      [{ text: "📱 Telefonni tahrirlash", callback_data: `customer_edit_phone_${customerId}` }],
+      [{ text: "📄 Qarz tafsilotlari", callback_data: `customer_debt_list_${customerId}` }],
+      [{ text: "🗑️ Mijozni o‘chirish", callback_data: `customer_delete_${customerId}` }],
+      [{ text: "❌ Bekor qilish", callback_data: "flow_cancel" }],
+    ],
   };
 }
 
@@ -323,28 +566,28 @@ async function sendCustomerHome(chatId) {
 }
 
 async function buildStatsText() {
-  const totalCustomers = (await get(`SELECT COUNT(*) as c FROM customers`))?.c || 0;
+  const totalCustomers = (await get(`SELECT COUNT(*) AS c FROM customers`))?.c || 0;
 
   const totalDebtRow = await get(`
-    SELECT COALESCE(SUM(total - paid),0) as remaining
+    SELECT COALESCE(SUM(total - paid),0) AS remaining
     FROM debts
     WHERE (total - paid) > 0
   `);
 
   const todayDebtsRow = await get(`
-    SELECT COALESCE(SUM(total),0) as s
+    SELECT COALESCE(SUM(total),0) AS s
     FROM debts
     WHERE date(created_at) = date('now','localtime')
   `);
 
   const todayPaysRow = await get(`
-    SELECT COALESCE(SUM(amount),0) as s
+    SELECT COALESCE(SUM(amount),0) AS s
     FROM payments
     WHERE date(created_at) = date('now','localtime')
   `);
 
   const top = await all(`
-    SELECT c.name, c.phone, SUM(d.total - d.paid) as remaining
+    SELECT c.name, c.phone, SUM(d.total - d.paid) AS remaining
     FROM debts d
     JOIN customers c ON c.id = d.customer_id
     WHERE (d.total - d.paid) > 0
@@ -369,7 +612,7 @@ async function buildStatsText() {
 
 async function sendCustomersList(chatId) {
   const rows = await all(`
-    SELECT c.id, c.name, c.phone, COALESCE(SUM(d.total - d.paid),0) as remaining
+    SELECT c.id, c.name, c.phone, COALESCE(SUM(d.total - d.paid),0) AS remaining
     FROM customers c
     LEFT JOIN debts d ON d.customer_id = c.id
     GROUP BY c.id
@@ -395,9 +638,7 @@ async function sendProductsList(chatId) {
 
   const text = rows.length
     ? "📦 <b>Mahsulotlar</b>\n\n" +
-      rows
-        .map((r) => `#${r.id} ${r.name} | narx: <b>${money(r.price)}</b> | stock: <b>${r.stock}</b> | ${r.unit_type}`)
-        .join("\n")
+      rows.map((r) => `#${r.id} ${r.name} | narx: <b>${money(r.price)}</b> | stock: <b>${r.stock}</b> | ${r.unit_type}`).join("\n")
     : "Mahsulotlar yo‘q.";
 
   await bot.sendMessage(chatId, text, { parse_mode: "HTML" });
@@ -405,7 +646,7 @@ async function sendProductsList(chatId) {
 
 async function sendTodayDebts(chatId) {
   const rows = await all(`
-    SELECT d.id, c.name, d.total, d.paid, (d.total - d.paid) as remaining, d.note
+    SELECT d.id, c.name, d.total, d.paid, (d.total - d.paid) AS remaining, d.note
     FROM debts d
     JOIN customers c ON c.id = d.customer_id
     WHERE date(d.created_at) = date('now','localtime')
@@ -442,7 +683,7 @@ async function sendTodayPayments(chatId) {
 
 async function sendTopDebtors(chatId) {
   const rows = await all(`
-    SELECT c.id, c.name, SUM(d.total - d.paid) as remaining
+    SELECT c.id, c.name, SUM(d.total - d.paid) AS remaining
     FROM debts d
     JOIN customers c ON c.id = d.customer_id
     WHERE (d.total - d.paid) > 0
@@ -466,20 +707,25 @@ async function findCustomerByPhone(phone) {
 
 async function linkCustomerToChat(customerId, chatId, userId) {
   const existing = await get(`SELECT * FROM customer_telegram_links WHERE telegram_chat_id = ?`, [String(chatId)]);
+
   if (existing) {
     await run(
-      `UPDATE customer_telegram_links
-       SET customer_id = ?, telegram_user_id = ?
-       WHERE telegram_chat_id = ?`,
-      [customerId, String(userId || ""), String(chatId)]
+      `
+      UPDATE customer_telegram_links
+      SET customer_id = ?, telegram_user_id = ?
+      WHERE telegram_chat_id = ?
+      `,
+      [Number(customerId), String(userId || ""), String(chatId)]
     );
     return;
   }
 
   await run(
-    `INSERT INTO customer_telegram_links(customer_id, telegram_chat_id, telegram_user_id)
-     VALUES(?, ?, ?)`,
-    [customerId, String(chatId), String(userId || "")]
+    `
+    INSERT INTO customer_telegram_links(customer_id, telegram_chat_id, telegram_user_id)
+    VALUES(?, ?, ?)
+    `,
+    [Number(customerId), String(chatId), String(userId || "")]
   );
 }
 
@@ -497,28 +743,28 @@ async function getLinkedCustomerByChat(chatId) {
 }
 
 async function buildCustomerDebtText(customerId) {
-  const customer = await get(`SELECT * FROM customers WHERE id = ?`, [customerId]);
+  const customer = await get(`SELECT * FROM customers WHERE id = ?`, [Number(customerId)]);
   if (!customer) return "Mijoz topilmadi.";
 
   const debts = await all(
     `
-    SELECT id, total, paid, note, due_date, created_at, (total - paid) as remaining
+    SELECT id, total, paid, note, due_date, created_at, (total - paid) AS remaining
     FROM debts
     WHERE customer_id = ?
     ORDER BY id DESC
     LIMIT 20
-  `,
-    [customerId]
+    `,
+    [Number(customerId)]
   );
 
   const totalRemainingRow = await get(
     `
-    SELECT COALESCE(SUM(total - paid), 0) as remaining
+    SELECT COALESCE(SUM(total - paid), 0) AS remaining
     FROM debts
     WHERE customer_id = ?
       AND (total - paid) > 0
-  `,
-    [customerId]
+    `,
+    [Number(customerId)]
   );
 
   const totalRemaining = Number(totalRemainingRow?.remaining || 0);
@@ -550,12 +796,14 @@ async function buildCustomerDebtText(customerId) {
 
 async function createOrMergeDebt({ customer_id, total, note, due_date, items = [] }) {
   const open = await get(
-    `SELECT * FROM debts
-     WHERE customer_id = ?
-       AND (total - paid) > 0
-     ORDER BY id DESC
-     LIMIT 1`,
-    [customer_id]
+    `
+    SELECT * FROM debts
+    WHERE customer_id = ?
+      AND (total - paid) > 0
+    ORDER BY id DESC
+    LIMIT 1
+    `,
+    [Number(customer_id)]
   );
 
   let debtId;
@@ -564,32 +812,54 @@ async function createOrMergeDebt({ customer_id, total, note, due_date, items = [
     const mergedNote = (open.note ? open.note + " | " : "") + (note || `Qarz qo‘shildi (+${total})`);
 
     await run(
-      `UPDATE debts
-       SET total = total + ?,
-           note = ?,
-           due_date = COALESCE(?, due_date)
-       WHERE id = ?`,
-      [total, mergedNote, due_date, open.id]
+      `
+      UPDATE debts
+      SET total = total + ?,
+          note = ?,
+          due_date = COALESCE(?, due_date)
+      WHERE id = ?
+      `,
+      [Number(total), mergedNote, due_date || null, Number(open.id)]
     );
 
     debtId = open.id;
   } else {
     const r = await run(
-      `INSERT INTO debts(customer_id, total, paid, note, due_date)
-       VALUES(?, ?, 0, ?, ?)`,
-      [customer_id, total, note || null, due_date]
+      `
+      INSERT INTO debts(customer_id, total, paid, note, due_date)
+      VALUES(?, ?, 0, ?, ?)
+      `,
+      [Number(customer_id), Number(total), note || null, due_date || null]
     );
 
     debtId = r.id;
   }
 
+  let firstProductId = null;
+  let totalQty = null;
+
   for (const it of items) {
-    const pid = Number(it.product_id);
+    const pid = Number(it.product_id || 0);
     const qty = Number(it.qty || 0);
+
     if (pid && qty > 0) {
       await run(`UPDATE products SET stock = stock - ? WHERE id = ?`, [qty, pid]);
+
+      if (!firstProductId) firstProductId = pid;
+      totalQty = (Number(totalQty || 0) + qty);
     }
   }
+
+  await addDebtEvent({
+    debt_id: debtId,
+    customer_id: customer_id,
+    event_type: "debt_add",
+    amount: total,
+    note: note || null,
+    product_id: firstProductId,
+    qty: totalQty,
+    due_date: due_date || null,
+  });
 
   return { debtId, merged: Boolean(open) };
 }
@@ -618,16 +888,30 @@ async function showDebtCustomerPickMenu(chatId) {
   });
 }
 
-async function showCustomerSearchResults(chatId, query) {
-  const rows = await all(`SELECT * FROM customers WHERE name LIKE ? OR phone LIKE ? ORDER BY id DESC LIMIT 20`, [`%${query}%`, `%${query}%`]);
+async function showCustomerSearchResults(chatId, query, mode = "debt") {
+  const rows = await all(
+    `SELECT * FROM customers WHERE name LIKE ? OR phone LIKE ? ORDER BY id DESC LIMIT 20`,
+    [`%${query}%`, `%${query}%`]
+  );
 
   if (!rows.length) {
     await bot.sendMessage(chatId, "Mijoz topilmadi. Yana boshqa ism yoki raqam yuboring.");
     return;
   }
 
-  const buttons = rows.map((r) => [{ text: `${r.name} (${r.phone || "-"})`, callback_data: `debt_pick_customer_${r.id}` }]);
-  buttons.push([{ text: "👤 Yangi mijoz qo‘shish", callback_data: "debt_customer_new" }]);
+  const buttons = rows.map((r) => {
+    const callback =
+      mode === "manage"
+        ? `manage_pick_customer_${r.id}`
+        : `debt_pick_customer_${r.id}`;
+
+    return [{ text: `${r.name} (${r.phone || "-"})`, callback_data: callback }];
+  });
+
+  if (mode === "debt") {
+    buttons.push([{ text: "👤 Yangi mijoz qo‘shish", callback_data: "debt_customer_new" }]);
+  }
+
   buttons.push([{ text: "❌ Bekor qilish", callback_data: "flow_cancel" }]);
 
   await bot.sendMessage(chatId, "Mijozni tanlang:", {
@@ -645,7 +929,9 @@ async function showProductPickMenu(chatId) {
     return;
   }
 
-  const buttons = rows.map((r) => [{ text: `${r.name} • ${money(r.price)} • stock:${r.stock}`, callback_data: `debt_pick_product_${r.id}` }]);
+  const buttons = rows.map((r) => [
+    { text: `${r.name} • ${money(r.price)} • stock:${r.stock}`, callback_data: `debt_pick_product_${r.id}` },
+  ]);
 
   buttons.push([{ text: "💵 Qo‘lda summa yozish", callback_data: "debt_type_manual" }]);
   buttons.push([{ text: "❌ Bekor qilish", callback_data: "flow_cancel" }]);
@@ -656,8 +942,8 @@ async function showProductPickMenu(chatId) {
 }
 
 async function askDebtConfirm(chatId, data) {
-  const customer = await get(`SELECT * FROM customers WHERE id = ?`, [data.customer_id]);
-  const product = data.product_id ? await get(`SELECT * FROM products WHERE id = ?`, [data.product_id]) : null;
+  const customer = await get(`SELECT * FROM customers WHERE id = ?`, [Number(data.customer_id)]);
+  const product = data.product_id ? await get(`SELECT * FROM products WHERE id = ?`, [Number(data.product_id)]) : null;
 
   const summary =
     `Tasdiqlaysizmi?\n\n` +
@@ -769,6 +1055,7 @@ function startBot() {
         if (data.startsWith("debt_pick_customer_")) {
           const customerId = Number(data.replace("debt_pick_customer_", ""));
           const st = getUserState(chatId) || { step: "", data: {} };
+
           st.step = "debt_after_customer_selected";
           st.data = { ...(st.data || {}), customer_id: customerId };
           setUserState(chatId, st);
@@ -857,6 +1144,111 @@ function startBot() {
           await bot.answerCallbackQuery(q.id);
           return;
         }
+
+        // ===== CUSTOMER MANAGE =====
+        if (data.startsWith("manage_pick_customer_")) {
+          const customerId = Number(data.replace("manage_pick_customer_", ""));
+          const text = await buildCustomerManageText(customerId);
+
+          await bot.sendMessage(chatId, text, {
+            parse_mode: "HTML",
+            reply_markup: getCustomerManageInline(customerId),
+          });
+
+          await bot.answerCallbackQuery(q.id);
+          return;
+        }
+
+        if (data.startsWith("customer_edit_name_")) {
+          const customerId = Number(data.replace("customer_edit_name_", ""));
+          setUserState(chatId, { step: "customer_edit_name_wait", data: { customer_id: customerId } });
+          await bot.sendMessage(chatId, "Yangi ismni yuboring:");
+          await bot.answerCallbackQuery(q.id);
+          return;
+        }
+
+        if (data.startsWith("customer_edit_phone_")) {
+          const customerId = Number(data.replace("customer_edit_phone_", ""));
+          setUserState(chatId, { step: "customer_edit_phone_wait", data: { customer_id: customerId } });
+          await bot.sendMessage(chatId, "Yangi telefon raqamni yuboring:");
+          await bot.answerCallbackQuery(q.id);
+          return;
+        }
+
+        if (data.startsWith("customer_debt_list_")) {
+          const customerId = Number(data.replace("customer_debt_list_", ""));
+          const debts = await all(
+            `
+            SELECT id, total, paid, (total - paid) AS remaining, due_date
+            FROM debts
+            WHERE customer_id = ?
+            ORDER BY id DESC
+            LIMIT 20
+            `,
+            [customerId]
+          );
+
+          if (!debts.length) {
+            await bot.sendMessage(chatId, "Bu mijozda qarz yo‘q.");
+          } else {
+            const buttons = debts.map((d) => [
+              {
+                text: `#${d.id} • ${money(d.remaining)} qolgan`,
+                callback_data: `show_debt_details_${d.id}`,
+              },
+            ]);
+            buttons.push([{ text: "❌ Bekor qilish", callback_data: "flow_cancel" }]);
+
+            await bot.sendMessage(chatId, "Qaysi qarz tafsilotini ko‘rasiz?", {
+              reply_markup: { inline_keyboard: buttons },
+            });
+          }
+
+          await bot.answerCallbackQuery(q.id);
+          return;
+        }
+
+        if (data.startsWith("customer_delete_")) {
+          const customerId = Number(data.replace("customer_delete_", ""));
+          setUserState(chatId, { step: "customer_delete_wait_username", data: { customer_id: customerId } });
+          await bot.sendMessage(chatId, "Mijozni o‘chirish uchun admin loginni yuboring:");
+          await bot.answerCallbackQuery(q.id);
+          return;
+        }
+
+        // ===== DEBT DETAILS =====
+        if (data.startsWith("show_debt_details_")) {
+          const debtId = Number(data.replace("show_debt_details_", ""));
+          const detailsText = await buildDebtDetailsText(debtId);
+          await bot.sendMessage(chatId, detailsText, { parse_mode: "HTML" });
+          await bot.answerCallbackQuery(q.id);
+          return;
+        }
+
+        // ===== DEBT DELETE =====
+        if (data.startsWith("debt_delete_yes_")) {
+          const debtId = Number(data.replace("debt_delete_yes_", ""));
+          const result = await deleteDebtDeep(debtId);
+
+          if (!result.ok) {
+            await bot.sendMessage(chatId, `❌ ${result.error}`);
+          } else {
+            await bot.sendMessage(chatId, `✅ Qarz #${debtId} o‘chirildi.`);
+          }
+
+          clearUserState(chatId);
+          await sendAdminHome(chatId);
+          await bot.answerCallbackQuery(q.id);
+          return;
+        }
+
+        if (data.startsWith("debt_delete_no_")) {
+          clearUserState(chatId);
+          await bot.sendMessage(chatId, "Bekor qilindi.");
+          await sendAdminHome(chatId);
+          await bot.answerCallbackQuery(q.id);
+          return;
+        }
       }
 
       await bot.answerCallbackQuery(q.id);
@@ -921,6 +1313,24 @@ function startBot() {
             await bot.sendMessage(chatId, "Yangi mijoz ismini yuboring:");
             return;
           }
+
+          if (text === "✏️ Mijoz tahrirlash") {
+            setUserState(chatId, { step: "customer_manage_search", data: {} });
+            await bot.sendMessage(chatId, "Tahrirlash uchun mijoz ismi yoki telefonini yuboring:");
+            return;
+          }
+
+          if (text === "📄 Qarz tafsiloti") {
+            setUserState(chatId, { step: "debt_detail_wait_id", data: {} });
+            await bot.sendMessage(chatId, "Qarz ID yuboring:");
+            return;
+          }
+
+          if (text === "🗑️ Qarz o‘chirish") {
+            setUserState(chatId, { step: "debt_delete_wait_id", data: {} });
+            await bot.sendMessage(chatId, "O‘chiriladigan qarz ID ni yuboring:");
+            return;
+          }
         }
 
         if (st?.step === "add_customer_wait_name") {
@@ -960,7 +1370,7 @@ function startBot() {
         }
 
         if (st?.step === "debt_wait_customer_search") {
-          await showCustomerSearchResults(chatId, text);
+          await showCustomerSearchResults(chatId, text, "debt");
           return;
         }
 
@@ -1024,9 +1434,143 @@ function startBot() {
           return;
         }
 
+        // ===== CUSTOMER MANAGE MESSAGE FLOWS =====
+        if (st?.step === "customer_manage_search") {
+          await showCustomerSearchResults(chatId, text, "manage");
+          return;
+        }
+
+        if (st?.step === "customer_edit_name_wait") {
+          const customerId = Number(st.data?.customer_id);
+          const newName = safeText(text);
+
+          if (!customerId || !newName) {
+            await bot.sendMessage(chatId, "Ism noto‘g‘ri.");
+            return;
+          }
+
+          await run(`UPDATE customers SET name = ? WHERE id = ?`, [newName, customerId]);
+          clearUserState(chatId);
+
+          const info = await buildCustomerManageText(customerId);
+          await bot.sendMessage(chatId, `✅ Ism yangilandi.\n\n${info}`, {
+            parse_mode: "HTML",
+            reply_markup: getCustomerManageInline(customerId),
+          });
+          return;
+        }
+
+        if (st?.step === "customer_edit_phone_wait") {
+          const customerId = Number(st.data?.customer_id);
+          const newPhone = safeText(text);
+
+          if (!customerId) {
+            await bot.sendMessage(chatId, "Xatolik.");
+            return;
+          }
+
+          await run(`UPDATE customers SET phone = ? WHERE id = ?`, [newPhone || null, customerId]);
+          clearUserState(chatId);
+
+          const info = await buildCustomerManageText(customerId);
+          await bot.sendMessage(chatId, `✅ Telefon yangilandi.\n\n${info}`, {
+            parse_mode: "HTML",
+            reply_markup: getCustomerManageInline(customerId),
+          });
+          return;
+        }
+
+        if (st?.step === "customer_delete_wait_username") {
+          st.data = { ...(st.data || {}), delete_username: text };
+          st.step = "customer_delete_wait_password";
+          setUserState(chatId, st);
+          await bot.sendMessage(chatId, "Endi admin parolni yuboring:");
+          return;
+        }
+
+        if (st?.step === "customer_delete_wait_password") {
+          const username = st.data?.delete_username;
+          const password = text;
+          const customerId = Number(st.data?.customer_id);
+
+          if (!adminCredsOk(username, password)) {
+            clearUserState(chatId);
+            await bot.sendMessage(chatId, "❌ Login yoki parol noto‘g‘ri. O‘chirish bekor qilindi.");
+            await sendAdminHome(chatId);
+            return;
+          }
+
+          const result = await deleteCustomerDeep(customerId);
+          clearUserState(chatId);
+
+          if (!result.ok) {
+            await bot.sendMessage(chatId, `❌ ${result.error}`);
+          } else {
+            await bot.sendMessage(chatId, `✅ Mijoz o‘chirildi: ${result.customer?.name || customerId}`);
+          }
+
+          await sendAdminHome(chatId);
+          return;
+        }
+
+        // ===== DEBT DETAILS =====
+        if (st?.step === "debt_detail_wait_id") {
+          const debtId = Number(text);
+          if (!debtId) {
+            await bot.sendMessage(chatId, "To‘g‘ri debt ID yuboring.");
+            return;
+          }
+
+          const detailsText = await buildDebtDetailsText(debtId);
+          clearUserState(chatId);
+          await bot.sendMessage(chatId, detailsText, { parse_mode: "HTML" });
+          await sendAdminHome(chatId);
+          return;
+        }
+
+        // ===== DEBT DELETE =====
+        if (st?.step === "debt_delete_wait_id") {
+          const debtId = Number(text);
+          if (!debtId) {
+            await bot.sendMessage(chatId, "To‘g‘ri debt ID yuboring.");
+            return;
+          }
+
+          const debt = await getDebtHeader(debtId);
+          if (!debt) {
+            clearUserState(chatId);
+            await bot.sendMessage(chatId, "Qarz topilmadi.");
+            await sendAdminHome(chatId);
+            return;
+          }
+
+          clearUserState(chatId);
+
+          const preview =
+            `🗑️ <b>Qarzni o‘chirishni tasdiqlaysizmi?</b>\n\n` +
+            `ID: <b>#${debt.id}</b>\n` +
+            `Mijoz: <b>${debt.customer_name}</b>\n` +
+            `Jami: <b>${money(debt.total)}</b>\n` +
+            `To‘langan: <b>${money(debt.paid)}</b>\n` +
+            `Qolgan: <b>${money(debt.remaining)}</b>\n` +
+            `Due: ${debt.due_date || "-"}`;
+
+          await bot.sendMessage(chatId, preview, {
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "✅ Ha, o‘chir", callback_data: `debt_delete_yes_${debtId}` }],
+                [{ text: "❌ Yo‘q", callback_data: `debt_delete_no_${debtId}` }],
+              ],
+            },
+          });
+          return;
+        }
+
         return;
       }
 
+      // ===== CUSTOMER SIDE =====
       if (text === "💳 Mening qarzim") {
         const linked = await getLinkedCustomerByChat(chatId);
         if (!linked) {
@@ -1065,7 +1609,7 @@ function startBot() {
   reminderInterval = setInterval(async () => {
     try {
       const overdue = await get(`
-        SELECT COUNT(*) as c
+        SELECT COUNT(*) AS c
         FROM debts
         WHERE (total - paid) > 0
           AND due_date IS NOT NULL
@@ -1085,7 +1629,7 @@ function startBot() {
 // ===== HEALTH =====
 app.get("/health", async (req, res) => {
   try {
-    const dbCheck = await get(`SELECT 1 as ok`);
+    const dbCheck = await get(`SELECT 1 AS ok`);
     res.json({
       ok: true,
       auth: req.session?.user === "admin",
@@ -1111,7 +1655,7 @@ app.get("/health", async (req, res) => {
 // ===== CUSTOMERS API =====
 app.get("/api/customers", requireAuth, async (req, res) => {
   try {
-    const q = (req.query.q || "").trim();
+    const q = safeText(req.query.q || "");
 
     const rows = q
       ? await all(`SELECT * FROM customers WHERE name LIKE ? OR phone LIKE ? ORDER BY id DESC`, [`%${q}%`, `%${q}%`])
@@ -1123,10 +1667,30 @@ app.get("/api/customers", requireAuth, async (req, res) => {
   }
 });
 
+app.get("/api/customers/:id", requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const summary = await getCustomerSummary(id);
+
+    if (!summary) {
+      return res.status(404).json({ ok: false, error: "Mijoz topilmadi" });
+    }
+
+    res.json({
+      ok: true,
+      customer: summary.customer,
+      remaining: summary.remaining,
+      debts_count: summary.debts_count,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.post("/api/customers", requireAuth, async (req, res) => {
   try {
-    const name = String(req.body?.name || "").trim();
-    const phone = String(req.body?.phone || "").trim();
+    const name = safeText(req.body?.name);
+    const phone = safeText(req.body?.phone);
 
     if (!name) {
       return res.status(400).json({ ok: false, error: "Mijoz nomi kiritilmagan" });
@@ -1142,14 +1706,22 @@ app.post("/api/customers", requireAuth, async (req, res) => {
 app.patch("/api/customers/:id", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const name = String(req.body?.name || "").trim();
-    const phone = String(req.body?.phone || "").trim();
+    const existing = await get(`SELECT * FROM customers WHERE id = ?`, [id]);
+
+    if (!existing) {
+      return res.status(404).json({ ok: false, error: "Mijoz topilmadi" });
+    }
+
+    const name = req.body?.name != null ? safeText(req.body.name) : null;
+    const phone = req.body?.phone != null ? safeText(req.body.phone) : null;
 
     await run(
-      `UPDATE customers
-       SET name = COALESCE(?, name),
-           phone = COALESCE(?, phone)
-       WHERE id = ?`,
+      `
+      UPDATE customers
+      SET name = COALESCE(?, name),
+          phone = COALESCE(?, phone)
+      WHERE id = ?
+      `,
       [name || null, phone || null, id]
     );
 
@@ -1159,12 +1731,37 @@ app.patch("/api/customers/:id", requireAuth, async (req, res) => {
   }
 });
 
+// customer delete => admin login/parol required
+app.delete("/api/customers/:id", requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const username = safeText(req.body?.username);
+    const password = safeText(req.body?.password);
+
+    if (!adminCredsOk(username, password)) {
+      return res.status(403).json({ ok: false, error: "Admin login yoki parol noto‘g‘ri" });
+    }
+
+    const result = await deleteCustomerDeep(id);
+    if (!result.ok) {
+      return res.status(404).json({ ok: false, error: result.error });
+    }
+
+    res.json({ ok: true, deleted_customer_id: id });
+  } catch (e) {
+    console.error("DELETE CUSTOMER ERROR:", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ===== PRODUCTS API =====
 app.get("/api/products", requireAuth, async (req, res) => {
   try {
-    const q = (req.query.q || "").trim();
+    const q = safeText(req.query.q || "");
 
-    const rows = q ? await all(`SELECT * FROM products WHERE name LIKE ? ORDER BY id DESC`, [`%${q}%`]) : await all(`SELECT * FROM products ORDER BY id DESC`);
+    const rows = q
+      ? await all(`SELECT * FROM products WHERE name LIKE ? ORDER BY id DESC`, [`%${q}%`])
+      : await all(`SELECT * FROM products ORDER BY id DESC`);
 
     res.json({ ok: true, rows });
   } catch (e) {
@@ -1175,7 +1772,7 @@ app.get("/api/products", requireAuth, async (req, res) => {
 
 app.post("/api/products", requireAuth, async (req, res) => {
   try {
-    const name = String(req.body?.name || "").trim();
+    const name = safeText(req.body?.name);
     const price = Number(req.body?.price || 0);
     const stock = Number(req.body?.stock || 0);
     const unit_type = req.body?.unit_type === "kilogram" ? "kilogram" : "piece";
@@ -1188,11 +1785,13 @@ app.post("/api/products", requireAuth, async (req, res) => {
 
     if (existing) {
       await run(
-        `UPDATE products
-         SET stock = stock + ?,
-             price = ?,
-             unit_type = ?
-         WHERE id = ?`,
+        `
+        UPDATE products
+        SET stock = stock + ?,
+            price = ?,
+            unit_type = ?
+        WHERE id = ?
+        `,
         [stock, price, unit_type, existing.id]
       );
 
@@ -1204,7 +1803,10 @@ app.post("/api/products", requireAuth, async (req, res) => {
       });
     }
 
-    const r = await run(`INSERT INTO products(name, price, stock, unit_type) VALUES(?, ?, ?, ?)`, [name, price, stock, unit_type]);
+    const r = await run(
+      `INSERT INTO products(name, price, stock, unit_type) VALUES(?, ?, ?, ?)`,
+      [name, price, stock, unit_type]
+    );
 
     return res.json({
       ok: true,
@@ -1224,18 +1826,20 @@ app.post("/api/products", requireAuth, async (req, res) => {
 app.patch("/api/products/:id", requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const name = String(req.body?.name || "").trim();
+    const name = safeText(req.body?.name || "");
     const price = req.body?.price != null ? Number(req.body.price) : null;
     const stock = req.body?.stock != null ? Number(req.body.stock) : null;
     const unit_type = req.body?.unit_type ? (req.body.unit_type === "kilogram" ? "kilogram" : "piece") : null;
 
     await run(
-      `UPDATE products
-       SET name = COALESCE(?, name),
-           price = COALESCE(?, price),
-           stock = COALESCE(?, stock),
-           unit_type = COALESCE(?, unit_type)
-       WHERE id = ?`,
+      `
+      UPDATE products
+      SET name = COALESCE(?, name),
+          price = COALESCE(?, price),
+          stock = COALESCE(?, stock),
+          unit_type = COALESCE(?, unit_type)
+      WHERE id = ?
+      `,
       [name || null, price, stock, unit_type, id]
     );
 
@@ -1262,7 +1866,7 @@ app.post("/api/debts", requireAuth, async (req, res) => {
   try {
     const customer_id = Number(req.body?.customer_id);
     const total = Number(req.body?.total || 0);
-    const note = String(req.body?.note || "").trim();
+    const note = safeText(req.body?.note || "");
     const due_date = req.body?.due_date ? String(req.body.due_date) : null;
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
 
@@ -1300,7 +1904,7 @@ app.get("/api/debts", requireAuth, async (req, res) => {
     const customer_id = req.query.customer_id ? Number(req.query.customer_id) : null;
     const unpaid = req.query.unpaid === "1";
     const today = req.query.today === "1";
-    const q = (req.query.q || "").trim();
+    const q = safeText(req.query.q || "");
 
     let where = `1=1`;
     const params = [];
@@ -1327,15 +1931,15 @@ app.get("/api/debts", requireAuth, async (req, res) => {
       `
       SELECT
         d.*,
-        c.name as customer_name,
-        c.phone as customer_phone,
-        (d.total - d.paid) as remaining,
+        c.name AS customer_name,
+        c.phone AS customer_phone,
+        (d.total - d.paid) AS remaining,
         CASE
           WHEN d.due_date IS NOT NULL
            AND date(d.due_date) < date('now','localtime')
            AND (d.total - d.paid) > 0
           THEN 1 ELSE 0
-        END as overdue
+        END AS overdue
       FROM debts d
       JOIN customers c ON c.id = d.customer_id
       WHERE ${where}
@@ -1352,12 +1956,52 @@ app.get("/api/debts", requireAuth, async (req, res) => {
   }
 });
 
+// qarz tafsilotlari
+app.get("/api/debts/:id/details", requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const debt = await getDebtHeader(id);
+
+    if (!debt) {
+      return res.status(404).json({ ok: false, error: "Qarz topilmadi" });
+    }
+
+    const timeline = await getDebtTimeline(id);
+
+    res.json({
+      ok: true,
+      debt,
+      timeline,
+    });
+  } catch (e) {
+    console.error("GET DEBT DETAILS ERROR:", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// qarz o‘chirish
+app.delete("/api/debts/:id", requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await deleteDebtDeep(id);
+
+    if (!result.ok) {
+      return res.status(404).json({ ok: false, error: result.error });
+    }
+
+    res.json({ ok: true, deleted_debt_id: id });
+  } catch (e) {
+    console.error("DELETE DEBT ERROR:", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ===== PAYMENTS API =====
 app.post("/api/payments", requireAuth, async (req, res) => {
   try {
     const debt_id = Number(req.body?.debt_id);
     const amount = Number(req.body?.amount || 0);
-    const note = String(req.body?.note || "").trim();
+    const note = safeText(req.body?.note || "");
 
     if (!debt_id || amount <= 0) {
       return res.status(400).json({ ok: false, error: "Ma'lumot noto‘g‘ri" });
@@ -1372,8 +2016,15 @@ app.post("/api/payments", requireAuth, async (req, res) => {
     const pay = Math.min(amount, remaining);
 
     await run(`INSERT INTO payments(debt_id, amount, note) VALUES(?, ?, ?)`, [debt_id, pay, note || null]);
-
     await run(`UPDATE debts SET paid = paid + ? WHERE id = ?`, [pay, debt_id]);
+
+    await addDebtEvent({
+      debt_id,
+      customer_id: d.customer_id,
+      event_type: "payment",
+      amount: pay,
+      note: note || "To‘lov",
+    });
 
     const c = await get(`SELECT * FROM customers WHERE id = ?`, [d.customer_id]);
 
@@ -1399,7 +2050,7 @@ app.get("/api/payments", requireAuth, async (req, res) => {
     const rows = debt_id
       ? await all(
           `
-          SELECT p.*, c.name as customer_name
+          SELECT p.*, c.name AS customer_name
           FROM payments p
           JOIN debts d ON d.id = p.debt_id
           JOIN customers c ON c.id = d.customer_id
@@ -1411,7 +2062,7 @@ app.get("/api/payments", requireAuth, async (req, res) => {
         )
       : await all(
           `
-          SELECT p.*, c.name as customer_name, p.debt_id
+          SELECT p.*, c.name AS customer_name, p.debt_id
           FROM payments p
           JOIN debts d ON d.id = p.debt_id
           JOIN customers c ON c.id = d.customer_id
@@ -1430,13 +2081,13 @@ app.get("/api/payments", requireAuth, async (req, res) => {
 // ===== STATS API =====
 app.get("/api/stats", requireAuth, async (req, res) => {
   try {
-    const totalCustomers = (await get(`SELECT COUNT(*) as c FROM customers`))?.c || 0;
-    const totalDebt = (await get(`SELECT COALESCE(SUM(total - paid),0) as s FROM debts WHERE (total - paid) > 0`))?.s || 0;
-    const todayDebts = (await get(`SELECT COALESCE(SUM(total),0) as s FROM debts WHERE date(created_at) = date('now','localtime')`))?.s || 0;
-    const todayPays = (await get(`SELECT COALESCE(SUM(amount),0) as s FROM payments WHERE date(created_at) = date('now','localtime')`))?.s || 0;
+    const totalCustomers = (await get(`SELECT COUNT(*) AS c FROM customers`))?.c || 0;
+    const totalDebt = (await get(`SELECT COALESCE(SUM(total - paid),0) AS s FROM debts WHERE (total - paid) > 0`))?.s || 0;
+    const todayDebts = (await get(`SELECT COALESCE(SUM(total),0) AS s FROM debts WHERE date(created_at) = date('now','localtime')`))?.s || 0;
+    const todayPays = (await get(`SELECT COALESCE(SUM(amount),0) AS s FROM payments WHERE date(created_at) = date('now','localtime')`))?.s || 0;
 
     const topDebtors = await all(`
-      SELECT c.id, c.name, SUM(d.total - d.paid) as remaining
+      SELECT c.id, c.name, SUM(d.total - d.paid) AS remaining
       FROM debts d
       JOIN customers c ON c.id = d.customer_id
       WHERE (d.total - d.paid) > 0
