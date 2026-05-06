@@ -6,6 +6,7 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const sqlite3 = require("sqlite3").verbose();
 const session = require("express-session");
 const TelegramBot = require("node-telegram-bot-api");
@@ -518,7 +519,7 @@ function getAdminMenuKeyboard() {
       [{ text: "✅ Bugungi to‘lovlar" }, { text: "🏆 Top qarzdorlar" }],
       [{ text: "➕ Qarz yozish" }, { text: "👤 Mijoz qo‘shish" }],
       [{ text: "✏️ Mijoz tahrirlash" }, { text: "📄 Qarz tafsiloti" }],
-      [{ text: "🗑️ Qarz o‘chirish" }],
+      [{ text: "🗑️ Qarz o’chirish" }, { text: "📂 Backup" }],
     ],
     resize_keyboard: true,
   };
@@ -608,6 +609,74 @@ async function buildStatsText() {
     `✅ Bugungi to‘lovlar: <b>${money(todayPaysRow?.s || 0)}</b>\n\n` +
     `🏆 <b>Top 5 qarzdor:</b>\n${topText}`
   );
+}
+
+async function backupToTelegram() {
+  if (!botEnabled() || !bot) return;
+
+  try {
+    const [customers, products, debts, payments, debt_events] = await Promise.all([
+      all(`SELECT * FROM customers ORDER BY id`),
+      all(`SELECT * FROM products ORDER BY id`),
+      all(`SELECT * FROM debts ORDER BY id`),
+      all(`SELECT * FROM payments ORDER BY id`),
+      all(`SELECT * FROM debt_events ORDER BY id`),
+    ]);
+
+    const data = {
+      exported_at: new Date().toISOString(),
+      customers,
+      products,
+      debts,
+      payments,
+      debt_events,
+    };
+
+    const tmpPath = path.join(os.tmpdir(), `diyor-backup-${Date.now()}.json`);
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
+
+    const dateStr = new Date().toLocaleString("ru-RU", { timeZone: "Asia/Tashkent" });
+
+    await bot.sendDocument(
+      OWNER_CHAT_ID,
+      tmpPath,
+      {
+        caption:
+          `📦 <b>Diyor Market Backup</b>\n` +
+          `📅 ${dateStr}\n` +
+          `👥 Mijozlar: ${customers.length}\n` +
+          `🧾 Qarzlar: ${debts.length}\n` +
+          `✅ To'lovlar: ${payments.length}`,
+        parse_mode: "HTML",
+      },
+      { filename: `diyor-backup-${Date.now()}.json`, contentType: "application/json" }
+    );
+
+    fs.unlinkSync(tmpPath);
+    console.log("✅ Backup Telegram'ga yuborildi");
+  } catch (e) {
+    console.error("Backup error:", e.message);
+  }
+}
+
+function scheduleBackup() {
+  function msUntilHour(hour) {
+    const now = new Date();
+    const target = new Date();
+    target.setHours(hour, 0, 0, 0);
+    if (target <= now) target.setDate(target.getDate() + 1);
+    return target - now;
+  }
+
+  const BACKUP_HOUR = 23;
+
+  setTimeout(async () => {
+    await backupToTelegram();
+    setInterval(backupToTelegram, 24 * 60 * 60 * 1000);
+  }, msUntilHour(BACKUP_HOUR));
+
+  const h = BACKUP_HOUR.toString().padStart(2, "0");
+  console.log(`📦 Backup har kuni ${h}:00 da ishlaydi`);
 }
 
 async function sendCustomersList(chatId) {
@@ -1326,9 +1395,15 @@ function startBot() {
             return;
           }
 
-          if (text === "🗑️ Qarz o‘chirish") {
+          if (text === "🗑️ Qarz o’chirish") {
             setUserState(chatId, { step: "debt_delete_wait_id", data: {} });
-            await bot.sendMessage(chatId, "O‘chiriladigan qarz ID ni yuboring:");
+            await bot.sendMessage(chatId, "O’chiriladigan qarz ID ni yuboring:");
+            return;
+          }
+
+          if (text === "📂 Backup") {
+            await bot.sendMessage(chatId, "⏳ Backup tayyorlanmoqda...");
+            await backupToTelegram();
             return;
           }
         }
@@ -1605,6 +1680,8 @@ function startBot() {
       console.error("Bot message error:", e.message);
     }
   });
+
+  scheduleBackup();
 
   reminderInterval = setInterval(async () => {
     try {
